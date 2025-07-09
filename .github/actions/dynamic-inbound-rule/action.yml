@@ -1,0 +1,81 @@
+name: "Update Load Balancer SG with Runner IP"
+description: |
+  Fetch the ALB/NLB for a given k8s Ingress, grab its SG,
+  then authorize a one-off port ingress from the runner IP.
+
+inputs:
+  aws-access-key-id:
+    description: "AWS_ACCESS_KEY_ID"
+    required: true
+  aws-secret-access-key:
+    description: "AWS_SECRET_ACCESS_KEY"
+    required: true
+  aws-region:
+    description: "AWS region (e.g. us-west-2)"
+    required: true
+  ingress-name:
+    description: "Name of the Kubernetes Ingress (to look up)"
+    required: true
+    default: "vault"
+  namespace:
+    description: "K8s namespace for the Ingress"
+    required: true
+    default: "default"
+  port:
+    description: "TCP port to open on the SG"
+    required: true
+    default: "443"
+
+outputs:
+  sg-id:
+    description: "The Security Group ID of the LB"
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id:     ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region:            ${{ inputs.aws-region }}
+
+    - name: Get LoadBalancer DNS Name
+      id: lb
+      shell: bash
+      run: |
+        LB_DNS=$(kubectl get ing ${{ inputs.ingress-name }} \
+          -n ${{ inputs.namespace }} \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        echo "lb_dns=$LB_DNS" >> $GITHUB_OUTPUT
+
+    - name: Lookup Security Group ID
+      id: sg
+      shell: bash
+      run: |
+        SG_ID=$(aws elbv2 describe-load-balancers \
+          --region ${{ inputs.aws-region }} \
+          --query "LoadBalancers[?DNSName=='${{ steps.lb.outputs.lb_dns }}'].SecurityGroups[0]" \
+          --output text)
+        echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
+
+    - name: Fetch Runner Public IP
+      id: ip
+      shell: bash
+      run: |
+        IP=$(curl -s http://checkip.amazonaws.com)
+        echo "runner_ip=$IP" >> $GITHUB_OUTPUT
+
+    - name: Authorize Ingress on SG
+      shell: bash
+      run: |
+        aws ec2 authorize-security-group-ingress \
+          --group-id ${{ steps.sg.outputs.sg_id }} \
+          --protocol tcp \
+          --region ${{ inputs.aws-region }} \
+          --port ${{ inputs.port }} \
+          --cidr ${{ steps.ip.outputs.runner_ip }}/32 || true
+
+    - name: Set Output SG_ID
+      run: echo "sg-id=${{ steps.sg.outputs.sg_id }}" >> $GITHUB_OUTPUT

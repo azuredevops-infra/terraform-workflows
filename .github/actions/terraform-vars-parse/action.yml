@@ -1,0 +1,56 @@
+name: "Parse Terraform Vars"
+description: "Parses a .tfvars file and outputs parsed JSON."
+inputs:
+  config_repo:
+    description: 'Repository name that contains terraform variables and other input definitions'
+  target_branch:
+    description: 'Name of the branch to use for repository checkout'
+    default: 'main'
+    required: true
+  pat-token:
+    description: "Personal Access Token to checkout the terraform variables repository"
+    required: true
+  file:
+    description: "Path to the .tfvars file"
+    required: true
+outputs:
+  parsed-json:
+    description: "JSON string of parsed key-value pairs"
+    value: ${{ steps.parse.outputs.parsed-json }}
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout Terraform Variables
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ inputs.config_repo }}
+        token: ${{ inputs.pat-token }}
+        path: terraform-vars
+        ref: ${{ inputs.target_branch }}
+          
+    - name: Parse .tfvars file
+      id: parse
+      shell: bash
+      run: |
+        echo "${{ inputs.file }}"
+        file="./terraform-vars/${{ inputs.file }}"
+        declare -A kv_pairs
+
+        # Read and parse the file line by line
+        while IFS='=' read -r key value; do
+          key=$(echo "$key" | xargs)
+          value=$(echo "$value" | xargs)
+          if [ -n "$key" ]; then
+            kv_pairs["$key"]="$value"
+          fi
+        done < "$file"
+
+        # Build JSON string from associative array
+        json="{"
+        for key in "${!kv_pairs[@]}"; do
+          json+="\"$key\":\"${kv_pairs[$key]}\","
+        done
+        json="${json%,}}"  # Remove trailing comma and close JSON object
+      
+        # Set the composite action output
+        echo "parsed-json=$json" >> $GITHUB_OUTPUT

@@ -1,0 +1,31 @@
+name: Setup ArgoCD CLI and Login
+description: Install ArgoCD CLI and authenticate to ArgoCD server.
+
+inputs:
+  version:
+    description: 'ArgoCD CLI version to install'
+    required: false
+    
+runs:
+  using: composite
+  steps:
+    - if: inputs.version == ''
+      name: ArgoCD get stable version number
+      id: argocd-version
+      shell: bash
+      run: |
+        echo "version=$(curl -L -s https://raw.githubusercontent.com/argoproj/argo-cd/stable/VERSION)" >> $GITHUB_OUTPUT
+        
+    - name: Install ArgoCD CLI
+      env:
+        VERSION: ${{ inputs.version != '' && inputs.version || steps.argocd-version.outputs.version }}
+      shell: bash
+      run: |
+        echo "Installing ArgoCD CLI version ${{ env.VERSION }}"
+        url="https://github.com/argoproj/argo-cd/releases/download/v${{ env.VERSION }}/argocd-linux-amd64"
+        curl --fail -sSL -o argocd $url
+        echo "Installation Complete!"
+        chmod +x argocd
+        sudo mv argocd /usr/local/bin/argocd
+        echo "Permission set complete"
+        argocd version --client

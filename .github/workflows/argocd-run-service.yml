@@ -1,0 +1,86 @@
+name: Reusable ArgoCD Workflow to Apply Services
+
+on:
+  workflow_call:
+    inputs:
+      argocd_url:
+        required: true
+        type: string
+      verify_ssl:
+        required: true
+        type: string
+      service:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+    secrets:
+      auth_token:
+        required: true
+      pat_token:
+        required: true
+      passphrase:
+        required: true
+
+jobs:
+  services:
+    runs-on: ubuntu-latest
+    env:
+      ARGOCD_VERIFY_SSL: ${{ inputs.verify_ssl }}
+      ARGOCD_URL: ${{ inputs.argocd_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Decrypt Secrets
+        run: |
+          token=$(echo -n "${{ secrets.auth_token }}" | base64 -d | gpg --decrypt --batch --passphrase ${{ secrets.passphrase }})
+          pat_token=$(echo -n "${{ secrets.pat_token }}" | base64 -d | gpg --decrypt --batch --passphrase ${{ secrets.passphrase }})
+          echo "ARGOCD_AUTH_TOKEN=$token" >> $GITHUB_ENV
+          echo "GH_PAT=$pat_token" >> $GITHUB_ENV
+
+      # - run: |
+      #     echo "ARGOCD_AUTH_TOKEN=${{ secrets.auth_token }}" >> "$GITHUB_ENV"
+      #     echo "GH_PAT=${{ secrets.pat_token }}" >> "$GITHUB_ENV"
+
+      - name: Checkout Terraform Variables
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          token: ${{ env.GH_PAT }}
+          path: terraform-vars
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt git+https://github.com/p1utoze/pyargocd.git
+
+      - name: Run All ArgoCD Scripts
+        if: ${{ inputs.service == 'all' }}
+        run: |
+          echo "Running all ArgoCD scripts"
+          python scripts/argocd-project.py -f terraform-vars/manifests/argocd-configs/project.yaml
+          python scripts/argocd-repository.py -f terraform-vars/manifests/argocd-configs/repository.yaml
+          python scripts/argocd-application.py -f terraform-vars/manifests/argocd-configs/application.yaml
+      
+      - name: Run ArgoCD ${{ inputs.service }} Script
+        if: contains(fromJSON('["project", "repository", "application"]'), inputs.service)
+        run: |
+          echo "Running ${{ inputs.service }} script"
+          python scripts/argocd-${{ inputs.service }}.py -f terraform-vars/manifests/argocd-configs/${{ inputs.service }}.yaml
+      
+      - name: Validate 'service' Input
+        if: ${{ !contains(fromJSON('["all", "project", "repository", "application"]'), inputs.service) }}
+        run: |
+          echo "❌ Invalid 'service' input: ${{ inputs.service }}"
+          exit 1
+

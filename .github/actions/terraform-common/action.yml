@@ -1,0 +1,110 @@
+name: Pre-Terraform Routine
+description: "Shared routines frequently executed as preliminary steps in most Terraform operation workflows."
+
+inputs:
+  core_repo:
+    description: 'Full Name of the organization/repository where the terraform modules are defined'
+    required: true
+  config_repo:
+    description: 'Full Name of the organization/repository where the terraform variables are defined'
+    required: true
+  fetch_depth:
+    description: 'Number of commits to fetch. 0 indicates all history for all branches and tags.'
+    default: 2
+    type: number
+  target_branch:
+    description: 'Name of the branch that has terraform root module configuration'
+    required: true
+    default: 'main'
+  environment:
+    description: 'Variables file to select based on the type of environment'
+    required: true
+  pat-token:
+    description: "Github Personal Access Token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set Terraform Variable file path
+      shell: bash
+      run: |
+        echo "${{ inputs.environment }}"
+        echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
+
+    # - name: Parse Terraform variables
+    #   id: tfvars
+    #   uses: ./.github/actions/terraform-vars-parse
+    #   with:
+    #     file: ${{ env.VARFILE_RELPATH }}
+    #     pat-token: ${{ inputs.pat-token }}
+    #     target_branch: ${{ inputs.target_branch }} 
+    #     config_repo: ${{ inputs.config_repo }}
+
+    - name: Checkout Terraform Configs
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.core_repo }}
+        token: ${{ inputs.pat-token }}
+        path: terraform-configs
+        ref: ${{ inputs.target_branch }}
+        fetch-depth: ${{ inputs.fetch_depth }}
+
+    - name: Checkout Terraform Variables
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.config_repo }} 
+        token: ${{ inputs.pat-token }}
+        path: terraform-vars
+        ref: ${{ inputs.target_branch }} 
+        fetch-depth: ${{ inputs.fetch_depth }}
+        
+    - name: Copy Auto TFVars File
+      shell: bash
+      run: cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars.json
+      
+
+    - name: Find and move values.yml files
+      shell: bash
+      run: |
+        echo "Searching for values.yaml or values.yml files..."
+        found_files=$(find . -type f -regex '.*values.ya?ml')
+
+        if [ -n "$found_files" ]; then
+          for file in $found_files; do
+            echo "Moving $file to current directory..."
+            mv "$file" ./terraform-configs/
+          done
+        else
+          echo "No matching files found. Skipping move."
+        fi
+
+    - name: Find and move Backend configuration files
+      shell: bash
+      run: |
+        echo "Searching for .backend or .tfbackend files..."
+        found_files=$(find . -type f -regex '.*[^.]+\.\(tfbackend\|backend\)')
+        if [ -n "$found_files" ]; then
+          for file in $found_files; do
+            echo "Moving $file to current directory..."
+            base64 -d $file > config.${{ inputs.environment }}.tfbackend
+            mv "config.${{ inputs.environment }}.tfbackend" ./terraform-configs/
+          done
+        else
+          echo "No matching files found. Skipping move."
+        fi
+        
+    - name: Find and move Terraform template files
+      shell: bash
+      run: |
+        echo "Searching for .tftpl or .tpl files..."
+        found_files=$(find . -type f -regex '.*values\.t[^/]*pl')
+
+        if [ -n "$found_files" ]; then
+          for file in $found_files; do
+            echo "Moving $file to current directory..."
+            mv "$file" ./terraform-configs/
+          done
+        else
+          echo "No matching files found. Skipping move."
+        fi

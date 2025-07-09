@@ -1,0 +1,108 @@
+name: Terraform Plan
+
+on:
+  repository_dispatch:
+    types: [tfvars-changed]
+    
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: '"Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
+        required: true
+        type: string
+      environment:
+        description: 'Type of the deployment environment to use'
+        required: true
+        type: choice
+        options: 
+          - dev
+          - staging
+          - prod  
+        
+permissions:
+      id-token: write
+      contents: read
+      
+jobs:    
+  plan:
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'repository_dispatch' &&
+       github.event.client_payload.tf-lifecycle == 'plan')
+    defaults:
+      run:
+        working-directory: .
+    env:
+      TF_WORKING_DIR: 'terraform-configs' 
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
+      ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+      
+    steps: 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+          
+      - name: Run Common Terraform Routines
+        id: tf-routines
+        uses: ./.github/actions/terraform-common
+        with:
+          core_repo: ${{ vars.TF_CORE_REPO }}
+          config_repo: ${{ vars.TF_CONFIG_REPO }}
+          target_branch: ${{ env.TARGET_BRANCH }}
+          environment: ${{ env.ENVIRONMENT }}
+          pat-token: ${{ secrets.GH_PAT }}
+      
+      - name: Run Terraform Auth Routine
+        uses: ./.github/actions/terraform-auth
+        with:
+          aws__oidc-arn: ${{ vars.AWS_OIDC_ARN }}
+          aws__region: 'us-east-1'
+          aws__access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws__secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          hcp__tf-version: '1.11.3'
+          hcp__api-token: ${{ secrets.TF_API_TOKEN }}
+          
+
+      - name: Generate Cache key hash
+        id: target-dir-hash
+        run: |
+          echo "hash_value=${{ hashFiles(format('{0}/*.tf', env.TF_WORKING_DIR)) }}" >> $GITHUB_OUTPUT
+
+      - name: Restore Terraform cache
+        id: restore-cache
+        uses: actions/cache@v4
+        with:
+          key: ${{ runner.os }}-terraform-${{ env.TARGET_BRANCH }}-${{ steps.target-dir-hash.outputs.hash_value }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-${{ env.TARGET_BRANCH  }}-
+            ${{ runner.os }}-terraform-
+          path: |
+            ${{ env.TF_WORKING_DIR }}/.terraform.lock.hcl
+            ${{ env.TF_WORKING_DIR }}/.terraform/
+
+      - name: Get backend file
+        id: tfbackend
+        run: echo "file=$(find . -type f -regex '.*[^.]+\.\(tfbackend\|backend\)')" >> $GITHUB_OUTPUT
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        
+      - run: |
+          echo "${{ steps.tfbackend.outputs.file }}" "${{ steps.restore-cache.outputs.cache-hit }}"
+
+      - name: Terraform Init With Backend Config File
+        if: steps.tfbackend.outputs.file != '' && steps.restore-cache.outputs.cache-hit != 'true'
+        run: terraform init -input=false -backend-config=${{ steps.tfbackend.outputs.file }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Init
+        if: steps.tfbackend.outputs.file == '' && steps.restore-cache.outputs.cache-hit != 'true'
+        run: terraform init -input=false
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Plan
+        run: terraform plan -input=false
+        working-directory: ${{ env.TF_WORKING_DIR }}

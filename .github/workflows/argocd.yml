@@ -1,0 +1,138 @@
+
+name: ArgoCD Apply By Service
+
+on:
+  repository_dispatch:
+    types: [service-changed]
+    
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: '"Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
+        required: true
+        type: string
+      environment:
+        description: 'Type of the deployment environment to use'
+        required: true
+        type: choice
+        options: 
+          - dev
+          - staging
+          - prod  
+      service:
+        description: 'Type of ARGOCD service to apply'
+        type: choice
+        options:
+          - project
+          - repository
+          - application
+        
+permissions:
+      id-token: write
+      contents: read
+      
+jobs:  
+  argocd:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'repository_dispatch'
+    defaults:
+      run:
+        working-directory: .
+    env:
+      TF_WORKING_DIR: 'terraform-configs' 
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
+      ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+      SERVICE: ${{ github.event_name == 'workflow_dispatch' && inputs.service || github.event.client_payload.service }}
+      ARGOCD_VERIFY_SSL: true
+
+    steps: 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+        with:
+           version: 'v1.32.0' # default is latest stable
+        id: install
+          
+      - name: Run Common Terraform Routines
+        id: tf-routines
+        uses: ./.github/actions/terraform-common
+        with:
+          core_repo: ${{ vars.TF_CORE_REPO }}
+          config_repo: ${{ vars.TF_CONFIG_REPO }}
+          target_branch: ${{ env.TARGET_BRANCH }}
+          environment: ${{ env.ENVIRONMENT }}
+          pat-token: ${{ secrets.GH_PAT }}
+      
+      - name: Run Terraform Auth Routine
+        uses: ./.github/actions/terraform-auth
+        with:
+          aws__oidc-arn: ${{ vars.AWS_OIDC_ARN }}
+          aws__region: 'us-east-1'
+          aws__access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws__secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Install ArgoCD CLI
+        uses: ./.github/actions/setup-argocd-cli
+
+      - name: Set vault URL output
+        id: set-vault-url
+        run: |
+          echo "vault_url=https://$( [ "$ENVIRONMENT" = "prod" ] && echo 'vault.hdcss.com' || echo "${ENVIRONMENT}.vault.hdcss.com" )" >> $GITHUB_OUTPUT
+
+      # - name: Get GitHub OIDC TokenMore actions
+      #   uses: actions/github-script@v6
+      #   id: oidc
+      #   with:
+      #     script: |
+      #       const token = await core.getIDToken("${{ env.ARGOCD_CLIENT_ID }}");
+      #       core.setOutput("token", token);
+
+      - name: Get Secrets
+        uses: hashicorp/vault-action@v3
+        with:
+          method: jwt
+          url: ${{ steps.set-vault-url.outputs.vault_url }}
+          namespace: default # HCP Vault and Vault Enterprise only
+          role: github-cicd-bot
+          jwtGithubAudience: 'cloudops-github-actions'
+          secrets: |
+            secret/data/argocd/tfapply argocd_server | ARGOCD_URL ;
+            secret/data/argocd/tfapply cluster_name | CLUSTER_NAME ;
+            secret/data/argocd/tfapply argocd_account | ARGOCD_ACCOUNT ;
+            secret/data/argocd/tfapply aws_region | AWS_REGION ;
+
+      - name: Update Inbound Rule
+        id: sg-in-rule
+        uses: ./.github/actions/dynamic-inbound-rule
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          ingress-name: 'vault'
+
+      - name: Login to argocd server
+        id: argocd_auth
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          argocd login --core
+          auth_token=$(argocd account generate-token --expires-in=15m --account ${{ env.ARGOCD_ACCOUNT }})
+          echo "::add-mask::$auth_token"
+          echo "ARGOCD_AUTH_TOKEN=$auth_token" >> $GITHUB_ENV
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt git+https://github.com/p1utoze/pyargocd.git
+
+      - name: Running ${{ env.SERVICE }} script
+        run: |
+          echo "Running ArgoCD-${{ env.SERVICE }} script"
+          python scripts/argocd-${{ env.SERVICE }}.py -f terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml
