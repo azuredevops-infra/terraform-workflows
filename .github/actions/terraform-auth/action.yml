@@ -46,7 +46,7 @@ runs:
         subscription-id: ${{ inputs.azure__subscription-id }}
         enable-AzPSSession: true
 
-    - name: Configure Azure Credentials (Service Principal - Legacy)
+    - name: Configure Azure Credentials (Service Principal)
       if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' }}
       uses: azure/login@v2
       with:
@@ -57,13 +57,12 @@ runs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ inputs.terraform__version }}
-        # No CLI config credentials for local backend
 
     - name: Install Azure CLI Extensions
       shell: bash
       run: |
-        az extension add --name application-gateway --only-show-errors
-        az extension add --name aks-preview --only-show-errors
+        az extension add --name application-gateway --only-show-errors || true
+        az extension add --name aks-preview --only-show-errors || true
         
     - name: Set Azure Environment Variables
       shell: bash
