@@ -2,14 +2,14 @@ name: Pre-Terraform Routine for Auth
 description: "Shared routines used for authenticating to certain providers, modules or backends"
 
 inputs:
-  aws__access-key-id:
-    description: "The AWS access key ID used for authentication in API requests."
-  aws__secret-access-key:
-    description: "The AWS secret access key associated with the access key ID for secure authentication."
-  aws__oidc-arn:
-    description: "The Amazon Resource Name (ARN) of the AWS OIDC role assigned to the GitHub OIDC provider for authentication."
-  aws__region:
-    description: "The target AWS region where Terraform resources will be provisioned."
+  ARM_CLIENT_ID:
+    description: "Azure Client ID for service principal"
+  ARM_CLIENT_SECRET:
+    description: "Azure Client Secret for service principal"
+  ARM_TENANT_ID:
+    description: "Azure Tenant ID"
+  ARM_SUBSCRIPTION_ID:
+    description: "Azure Subscription ID"
   hcp__api-token:
     description: "The API token for HashiCorp Cloud Platform (HCP) Terraform, granting access to team-level operations."
   hcp__tf-version:
@@ -46,4 +46,13 @@ runs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ inputs.hcp__tf-version }}
+
+      - name: Set Azure Environment Variables
+      if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' && inputs.ARM_TENANT_ID != '' && inputs.ARM_SUBSCRIPTION_ID != '' }}
+      shell: bash
+      run: |
+        echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
+        echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
+        echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
+        echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
     
