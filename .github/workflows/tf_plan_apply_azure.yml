@@ -63,6 +63,12 @@ jobs:
       VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || 'main' }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
       AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
+      TF_CLI_CONFIG_FILE: ""
+      TF_INPUT: "false"
+      TF_IN_AUTOMATION: "true"
+      TF_CLOUD_ORGANIZATION: ""
+      TF_WORKSPACE: ""
+      TF_TOKEN_app_terraform_io: ""
 
     outputs: 
       cluster_name: ${{ steps.finalizer.outputs.cluster_name }}
@@ -92,7 +98,7 @@ jobs:
           environment: ${{ env.ENVIRONMENT }}
           pat-token: ${{ secrets.GH_PAT }}
       
-      - name: 🚨 Emergency Terraform Auth Routine
+      - name:  Emergency Terraform Auth Routine
         uses: ./.github/actions/terraform-auth
         with:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
@@ -122,44 +128,105 @@ jobs:
             ${{ env.TF_WORKING_DIR }}/.terraform.lock.hcl
             ${{ env.TF_WORKING_DIR }}/.terraform/
 
-      - name: 🚫 Force Disable Terraform Cloud
+      - name:  Nuclear Reset - Complete Terraform Cloud Disable
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          echo "🚫 EMERGENCY: Forcefully disabling Terraform Cloud..."
+          echo " NUCLEAR RESET: Completely removing all Terraform Cloud traces..."
           
-          # Remove any Terraform Cloud configuration files
+          # Remove ALL Terraform files and directories
+          rm -rf .terraform/ 2>/dev/null || true
+          rm -f .terraform.lock.hcl 2>/dev/null || true
+          rm -f terraform.tfstate* 2>/dev/null || true
+          rm -f .terraformrc 2>/dev/null || true
+          rm -f terraform.rc 2>/dev/null || true
+          
+          # Remove global Terraform configurations
+          rm -rf ~/.terraform.d/ 2>/dev/null || true
           rm -f ~/.terraformrc 2>/dev/null || true
-          rm -f ~/.terraform.d/credentials.tfrc.json 2>/dev/null || true
-          rm -f .terraform/terraform.tfplan 2>/dev/null || true
+          rm -f ~/terraform.rc 2>/dev/null || true
           
-          # Create empty credentials file
+          # Create empty Terraform configuration directory
           mkdir -p ~/.terraform.d
           echo '{}' > ~/.terraform.d/credentials.tfrc.json
           
-          # Clear any Terraform Cloud environment variables
+          # Clear ALL Terraform-related environment variables
           unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
           unset TF_WORKSPACE 2>/dev/null || true
           unset TF_TOKEN_app_terraform_io 2>/dev/null || true
           unset TERRAFORM_CONFIG 2>/dev/null || true
+          unset TFC_TOKEN 2>/dev/null || true
+          unset TERRAFORM_CLOUD_TOKEN 2>/dev/null || true
           
-          # Verify backend configuration
-          echo "📋 Current backend configuration:"
-          grep -A 10 "backend" versions.tf || echo "No backend found in versions.tf"
-          
-          # Set environment variables to force local backend
-          echo "TF_CLI_CONFIG_FILE=" >> $GITHUB_ENV
-          echo "TF_INPUT=false" >> $GITHUB_ENV
-          echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
-          echo "TF_CLOUD_ORGANIZATION=" >> $GITHUB_ENV
-          echo "TF_WORKSPACE=" >> $GITHUB_ENV
-          
-          echo "✅ Terraform Cloud forcefully disabled"
+          # Create a clean versions.tf file with ONLY local backend
+          cat > versions_clean.tf << 'EOF'
+          terraform {
+            required_providers {
+              azurerm = {
+                source  = "hashicorp/azurerm"
+                version = ">= 4.20.0"
+              }
+              azuread = {
+                source  = "hashicorp/azuread"
+                version = ">= 3.0.0"
+              }
+              random = {
+                source  = "hashicorp/random"
+                version = "~> 3.5.1"
+              }
+              kubernetes = {
+                source  = "hashicorp/kubernetes"
+                version = ">= 2.10.0"
+              }
+              helm = {
+                source  = "hashicorp/helm"
+                version = ">= 2.5.0"
+              }
+            }
+            required_version = ">= 1.5.0"
 
-      - name: Terraform Init (Local Backend)
+            backend "local" {
+              path = "terraform.tfstate"
+            }
+          }
+          EOF
+          
+          # Replace the original versions.tf
+          cp versions_clean.tf versions.tf
+          
+          echo " Nuclear reset completed - all Terraform Cloud traces removed"
+          
+          # Verify the clean state
+          echo " Current versions.tf content:"
+          cat versions.tf
+          
+          echo " Current directory contents:"
+          ls -la
+
+      - name: Terraform Init (Clean Local Backend)
         if: steps.restore-cache.outputs.cache-hit != 'true'
         run: |
-          echo "🏠 Initializing Terraform with local backend..."
-          terraform init -input=false -backend=true -upgrade=false
+          echo " Clean initialization with local backend..."
+          
+          # Double-check no cloud configuration exists
+          if grep -q "cloud\|remote" versions.tf; then
+            echo " Found cloud/remote configuration - cleaning..."
+            sed -i '/cloud\|remote/d' versions.tf
+          fi
+          
+          # Initialize with explicit local backend
+          terraform init \
+            -input=false \
+            -backend=true \
+            -force-copy \
+            -get=true \
+            -upgrade=false \
+            -verify-plugins=true
+          
+          echo " Terraform initialized with local backend"
+          
+          # Verify initialization
+          terraform version
+          ls -la .terraform/ || echo "No .terraform directory"
         working-directory: ${{ env.TF_WORKING_DIR }}
         
       - name: Terraform Validate
@@ -191,7 +258,7 @@ jobs:
             const fs = require('fs');
             const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/tfplan.txt', 'utf8');
             
-            const comment = `## 🏗️ Terraform Plan Results for ${{ env.ENVIRONMENT }} (Emergency Mode)
+            const comment = `## 🏗 Terraform Plan Results for ${{ env.ENVIRONMENT }} (Emergency Mode)
             
             ### Core Branch: ${{ env.TARGET_BRANCH }}
             ### Variables Branch: ${{ env.VARIABLES_BRANCH }}
@@ -225,7 +292,7 @@ jobs:
            github.event.client_payload.event_name != 'pull_request_target') ||
           (github.ref == 'refs/heads/main' && github.event_name == 'push')
         run: |
-          echo "🚀 Applying Terraform changes..."
+          echo " Applying Terraform changes..."
           terraform apply -auto-approve tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
 
@@ -239,7 +306,7 @@ jobs:
         id: finalizer
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          echo "📊 Extracting Terraform outputs..."
+          echo " Extracting Terraform outputs..."
           
           # Get cluster credentials if AKS exists
           if terraform output cluster_name &>/dev/null; then
@@ -251,7 +318,7 @@ jobs:
             
             # Update kubeconfig
             az aks get-credentials --resource-group $RESOURCE_GROUP --name $CLUSTER_NAME --overwrite-existing
-            echo "✅ Kubeconfig updated for cluster: $CLUSTER_NAME"
+            echo " Kubeconfig updated for cluster: $CLUSTER_NAME"
           fi
           
           # Get Application Gateway info if enabled
@@ -260,8 +327,8 @@ jobs:
             GENESIS_FQDN="genesis-azure.d01.hdcss.com"
             echo "application_gateway_ip=$APP_GW_IP" >> $GITHUB_OUTPUT
             echo "genesis_fqdn=$GENESIS_FQDN" >> $GITHUB_OUTPUT
-            echo "🌐 Application Gateway IP: $APP_GW_IP"
-            echo "🎯 Genesis FQDN: $GENESIS_FQDN"
+            echo " Application Gateway IP: $APP_GW_IP"
+            echo " Genesis FQDN: $GENESIS_FQDN"
           fi
           
           # Get Grafana information
@@ -270,8 +337,8 @@ jobs:
             GRAFANA_FQDN="grafana.genesis-azure.d01.hdcss.com"
             echo "grafana_url=$GRAFANA_URL" >> $GITHUB_OUTPUT
             echo "grafana_fqdn=$GRAFANA_FQDN" >> $GITHUB_OUTPUT
-            echo "📊 Grafana URL: $GRAFANA_URL"
-            echo "🎯 Grafana Custom FQDN: $GRAFANA_FQDN"
+            echo " Grafana URL: $GRAFANA_URL"
+            echo " Grafana Custom FQDN: $GRAFANA_FQDN"
           fi
 
   genesis-argocd-setup:
@@ -305,7 +372,7 @@ jobs:
           path: terraform-vars
           ref: ${{ env.VARIABLES_BRANCH }}
           
-      - name: 🚨 Emergency Azure Authentication
+      - name:  Emergency Azure Authentication
         uses: ./.github/actions/terraform-auth
         with:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
@@ -332,25 +399,25 @@ jobs:
 
       - name: Setup Genesis Secrets in Key Vault
         run: |
-          echo "🔐 Setting up Genesis secrets in Azure Key Vault..."
+          echo " Setting up Genesis secrets in Azure Key Vault..."
           
           # Store Genesis credentials in Key Vault
           az keyvault secret set \
             --vault-name oorja-dev-kv-bnk4ys \
             --name "genesis-username" \
-            --value "Harman-DTS" || echo "⚠️ Key Vault access limited"
+            --value "Harman-DTS" || echo " Key Vault access limited"
           
           az keyvault secret set \
             --vault-name oorja-dev-kv-bnk4ys \
             --name "genesis-password" \
-            --value "${{ secrets.GENESIS_PAT_TOKEN }}" || echo "⚠️ Key Vault access limited"
+            --value "${{ secrets.GENESIS_PAT_TOKEN }}" || echo " Key Vault access limited"
 
       - name: Install ArgoCD CLI
         uses: ./.github/actions/setup-argocd-cli
 
       - name: Configure ArgoCD Access
         run: |
-          echo "🎯 Configuring ArgoCD access..."
+          echo " Configuring ArgoCD access..."
           
           # Wait for ArgoCD to be ready
           kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd || true
@@ -365,12 +432,12 @@ jobs:
           # Login to ArgoCD
           argocd login localhost:8080 --username admin --password $ARGOCD_PWD --insecure
           
-          echo "✅ ArgoCD access configured"
+          echo " ArgoCD access configured"
 
       - name: Deploy Genesis Projects via ArgoCD
         run: |
-          echo "🚀 Deploying Genesis applications via ArgoCD..."
-          echo "📂 Using variables from branch: ${{ env.VARIABLES_BRANCH }}"
+          echo " Deploying Genesis applications via ArgoCD..."
+          echo " Using variables from branch: ${{ env.VARIABLES_BRANCH }}"
           
           # Set environment variables for template substitution
           export username="Harman-DTS"
@@ -383,7 +450,7 @@ jobs:
 
       - name: Verify Genesis Deployment
         run: |
-          echo "🔍 Verifying Genesis deployment..."
+          echo " Verifying Genesis deployment..."
           
           # Wait for Genesis applications to be healthy
           timeout 600 bash -c '
@@ -396,9 +463,9 @@ jobs:
           # Show Genesis services
           kubectl get svc -n genesis
           
-          echo "🎉 Genesis is now accessible through Application Gateway!"
-          echo "🌍 Frontend URL: https://${{ env.GENESIS_FQDN }}"
-          echo "📡 Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
+          echo " Genesis is now accessible through Application Gateway!"
+          echo " Frontend URL: https://${{ env.GENESIS_FQDN }}"
+          echo " Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
   
   grafana-configuration:
     needs: terraform
@@ -423,7 +490,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         
-      - name: 🚨 Emergency Azure Authentication
+      - name:  Emergency Azure Authentication
         uses: ./.github/actions/terraform-auth
         with:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
@@ -440,49 +507,49 @@ jobs:
 
       - name: Configure Grafana Datasources
         run: |
-          echo "📊 Configuring Grafana datasources..."
+          echo " Configuring Grafana datasources..."
           
           # Get Grafana workspace information
           GRAFANA_ID=$(az grafana list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].id" -o tsv 2>/dev/null || echo "")
           
           if [ -n "$GRAFANA_ID" ]; then
-            echo "✅ Found Grafana workspace: $GRAFANA_ID"
+            echo " Found Grafana workspace: $GRAFANA_ID"
             
             # Configure Prometheus datasource
-            echo "🔗 Configuring Prometheus datasource..."
+            echo " Configuring Prometheus datasource..."
             
             # Get Prometheus service endpoint from cluster
             PROMETHEUS_URL="http://prometheus-server.observability.svc.cluster.local"
             
             # Note: Azure Managed Grafana datasource configuration
             # This would typically be done through Azure CLI or ARM templates
-            echo "📡 Prometheus URL: $PROMETHEUS_URL"
-            echo "🎯 Grafana will be accessible at: https://${{ env.GRAFANA_FQDN }}"
-            echo "📊 Native Grafana URL: ${{ env.GRAFANA_URL }}"
+            echo " Prometheus URL: $PROMETHEUS_URL"
+            echo " Grafana will be accessible at: https://${{ env.GRAFANA_FQDN }}"
+            echo " Native Grafana URL: ${{ env.GRAFANA_URL }}"
             
           else
-            echo "⚠️ Grafana workspace not found in resource group (limited access)"
+            echo " Grafana workspace not found in resource group (limited access)"
           fi
 
       - name: Verify Grafana Access
         run: |
-          echo "🔍 Verifying Grafana configuration..."
+          echo " Verifying Grafana configuration..."
           
           # Check if Grafana is accessible
           if [ -n "${{ env.GRAFANA_URL }}" ]; then
-            echo "✅ Azure Managed Grafana deployed successfully!"
+            echo " Azure Managed Grafana deployed successfully!"
             echo ""
-            echo "🎯 Access URLs:"
-            echo "  📊 Native Azure Grafana: ${{ env.GRAFANA_URL }}"
-            echo "  🌐 Application Gateway: https://${{ env.GRAFANA_FQDN }}"
-            echo "  📡 Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
+            echo " Access URLs:"
+            echo "   Native Azure Grafana: ${{ env.GRAFANA_URL }}"
+            echo "   Application Gateway: https://${{ env.GRAFANA_FQDN }}"
+            echo "   Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
             echo ""
-            echo "👤 Admin User: 299b42cc-b252-4e9e-bef2-f4c5370ebdca"
+            echo " Admin User: 299b42cc-b252-4e9e-bef2-f4c5370ebdca"
             echo ""
             echo "🔧 Next Steps:"
             echo "  1. Add DNS record: ${{ env.APP_GATEWAY_IP }} → grafana.genesis-azure.d01.hdcss.com"
             echo "  2. Configure additional datasources in Grafana UI"
             echo "  3. Import dashboards for AKS monitoring"
           else
-            echo "⚠️ Grafana URL not available from Terraform outputs"
+            echo " Grafana URL not available from Terraform outputs"
           fi
