@@ -1,58 +1,81 @@
-name: Pre-Terraform Routine for Auth
-description: "Shared routines used for authenticating to certain providers, modules or backends"
+name: "Azure Terraform Authentication"
+description: |
+  Centralized authentication for Azure with OIDC support and Azure Key Vault integration.
+  Supports local backend (no HCP cloud dependency).
 
 inputs:
+  # Azure OIDC Configuration
+  azure__client-id:
+    description: "Azure Client ID for OIDC authentication"
+    required: false
+  azure__tenant-id:
+    description: "Azure Tenant ID for OIDC authentication"  
+    required: false
+  azure__subscription-id:
+    description: "Azure Subscription ID for OIDC authentication"
+    required: false
+  
+  # Legacy Support
   ARM_CLIENT_ID:
     description: "Azure Client ID for service principal"
+    required: false
   ARM_CLIENT_SECRET:
     description: "Azure Client Secret for service principal"
+    required: false
   ARM_TENANT_ID:
     description: "Azure Tenant ID"
+    required: false
   ARM_SUBSCRIPTION_ID:
     description: "Azure Subscription ID"
-  hcp__api-token:
-    description: "The API token for HashiCorp Cloud Platform (HCP) Terraform, granting access to team-level operations."
-  hcp__tf-version:
-    description: "The specific Terraform version to install and use during the job execution."
-    default: '1.11.3'
+    required: false
+  
+  # Terraform Configuration
+  terraform__version:
+    description: "Terraform version to install"
+    default: '1.6.6'
     
 runs:
   using: composite
   steps:
-    - name: Configure AWS Credentials (OIDC)
-      if: ${{ inputs.aws__oidc-arn != '' && inputs.aws__region != '' }}
-      uses: aws-actions/configure-aws-credentials@v3
+    - name: Configure Azure Credentials (OIDC)
+      if: ${{ inputs.azure__client-id != '' && inputs.azure__tenant-id != '' }}
+      uses: azure/login@v2
       with:
-        role-to-assume: ${{ inputs.aws__oidc-arn }}
-        aws-region: ${{ inputs.aws__region }}
+        client-id: ${{ inputs.azure__client-id }}
+        tenant-id: ${{ inputs.azure__tenant-id }}
+        subscription-id: ${{ inputs.azure__subscription-id }}
+        enable-AzPSSession: true
 
-    - name: Configure AWS credentials (Static IAM)
-      if: ${{ inputs.aws__secret-access-key != '' && inputs.aws__access-key-id != '' }}
-      uses: aws-actions/configure-aws-credentials@v3
+    - name: Configure Azure Credentials (Service Principal - Legacy)
+      if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' }}
+      uses: azure/login@v2
       with:
-        aws-access-key-id: ${{ inputs.aws__access-key-id }}
-        aws-secret-access-key: ${{ inputs.aws__secret-access-key }}
-        aws-region: ${{ inputs.aws__region }}
-        
-    - name: Setup Terraform with HCP Remote Cloud
-      if: ${{ inputs.hcp__api-token != ''}}
+        creds: '{"clientId":"${{ inputs.ARM_CLIENT_ID }}","clientSecret":"${{ inputs.ARM_CLIENT_SECRET }}","subscriptionId":"${{ inputs.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ inputs.ARM_TENANT_ID }}"}'
+        enable-AzPSSession: true
+
+    - name: Setup Terraform (Local Backend)
       uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: ${{ inputs.hcp__tf-version }}
-        cli_config_credentials_token: ${{ inputs.hcp__api-token }}
+        terraform_version: ${{ inputs.terraform__version }}
+        # No CLI config credentials for local backend
 
-    - name: Setup Terraform locally
-      if: ${{ inputs.hcp__api-token == ''}}
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ inputs.hcp__tf-version }}
-
-      - name: Set Azure Environment Variables
-      if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' && inputs.ARM_TENANT_ID != '' && inputs.ARM_SUBSCRIPTION_ID != '' }}
+    - name: Install Azure CLI Extensions
       shell: bash
       run: |
-        echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
-        echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
-        echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-        echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-    
+        az extension add --name application-gateway --only-show-errors
+        az extension add --name aks-preview --only-show-errors
+        
+    - name: Set Azure Environment Variables
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.azure__client-id }}" ]; then
+          echo "ARM_CLIENT_ID=${{ inputs.azure__client-id }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ inputs.azure__tenant-id }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ inputs.azure__subscription-id }}" >> $GITHUB_ENV
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+        elif [ -n "${{ inputs.ARM_CLIENT_ID }}" ]; then
+          echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+        fi
