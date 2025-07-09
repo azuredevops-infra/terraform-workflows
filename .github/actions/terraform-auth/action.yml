@@ -30,6 +30,28 @@ runs:
         echo "✅ Azure CLI available"
         az version
 
+    - name: Disable Terraform Cloud
+      shell: bash
+      run: |
+        echo "🚫 Disabling Terraform Cloud authentication..."
+        
+        # Remove any existing Terraform Cloud configuration
+        rm -f ~/.terraformrc 2>/dev/null || true
+        rm -f ~/.terraform.d/credentials.tfrc.json 2>/dev/null || true
+        
+        # Clear Terraform Cloud environment variables
+        unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
+        unset TF_WORKSPACE 2>/dev/null || true
+        unset TF_TOKEN_app_terraform_io 2>/dev/null || true
+        unset TERRAFORM_CONFIG 2>/dev/null || true
+        
+        # Set environment variables to disable Terraform Cloud
+        echo "TF_CLI_CONFIG_FILE=/dev/null" >> $GITHUB_ENV
+        echo "TF_INPUT=false" >> $GITHUB_ENV
+        echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
+        
+        echo "✅ Terraform Cloud disabled"
+
     - name: Try Environment-based Authentication
       shell: bash
       run: |
@@ -67,10 +89,33 @@ runs:
         
         echo "✅ Subscription context set"
 
-    - name: Setup Terraform
+    - name: Setup Terraform (Local Backend Only)
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ inputs.terraform__version }}
+        cli_config_credentials_token: '' # Explicitly disable Terraform Cloud
+
+    - name: Configure Terraform for Local Backend
+      shell: bash
+      run: |
+        echo "🏠 Configuring Terraform for local backend only..."
+        
+        # Create a minimal Terraform CLI config that disables cloud
+        mkdir -p ~/.terraform.d
+        cat > ~/.terraform.d/credentials.tfrc.json << 'EOF'
+{}
+EOF
+        
+        # Set Terraform environment variables for local operation
+        echo "TF_CLI_CONFIG_FILE=" >> $GITHUB_ENV
+        echo "TF_INPUT=false" >> $GITHUB_ENV
+        echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
+        
+        # Disable any Terraform Cloud integration
+        echo "TF_CLOUD_ORGANIZATION=" >> $GITHUB_ENV
+        echo "TF_WORKSPACE=" >> $GITHUB_ENV
+        
+        echo "✅ Terraform configured for local backend"
 
     - name: Set Terraform Environment Variables
       shell: bash
@@ -92,6 +137,23 @@ runs:
         esac
         
         echo "✅ Terraform environment configured with method: $AUTH_METHOD"
+
+    - name: Verify Terraform Configuration
+      shell: bash
+      run: |
+        echo "🔍 Verifying Terraform configuration..."
+        
+        # Check Terraform version
+        terraform version
+        
+        # Verify no Terraform Cloud configuration
+        echo "📂 Terraform configuration directory:"
+        ls -la ~/.terraform.d/ 2>/dev/null || echo "No Terraform config directory"
+        
+        echo "🌐 Terraform Cloud environment variables:"
+        env | grep -E "^TF_" || echo "No TF_ environment variables found"
+        
+        echo "✅ Terraform configuration verified"
 
     - name: Verify Access
       shell: bash
