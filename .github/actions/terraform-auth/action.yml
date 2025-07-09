@@ -37,8 +37,25 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check Authentication Method
+      shell: bash
+      run: |
+        echo "🔍 Checking available authentication methods..."
+        
+        if [ -n "${{ inputs.azure__client-id }}" ] && [ -n "${{ inputs.azure__tenant-id }}" ]; then
+          echo "✅ OIDC authentication available"
+          echo "AUTH_METHOD=oidc" >> $GITHUB_ENV
+        elif [ -n "${{ inputs.ARM_CLIENT_ID }}" ] && [ -n "${{ inputs.ARM_CLIENT_SECRET }}" ]; then
+          echo "✅ Service Principal authentication available"
+          echo "AUTH_METHOD=service_principal" >> $GITHUB_ENV
+        else
+          echo "⚠️ No service principal credentials provided"
+          echo "🔧 Will attempt Azure CLI authentication"
+          echo "AUTH_METHOD=cli" >> $GITHUB_ENV
+        fi
+
     - name: Configure Azure Credentials (OIDC)
-      if: ${{ inputs.azure__client-id != '' && inputs.azure__tenant-id != '' }}
+      if: env.AUTH_METHOD == 'oidc'
       uses: azure/login@v2
       with:
         client-id: ${{ inputs.azure__client-id }}
@@ -47,11 +64,47 @@ runs:
         enable-AzPSSession: true
 
     - name: Configure Azure Credentials (Service Principal)
-      if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' }}
+      if: env.AUTH_METHOD == 'service_principal'
       uses: azure/login@v2
       with:
         creds: '{"clientId":"${{ inputs.ARM_CLIENT_ID }}","clientSecret":"${{ inputs.ARM_CLIENT_SECRET }}","subscriptionId":"${{ inputs.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ inputs.ARM_TENANT_ID }}"}'
         enable-AzPSSession: true
+
+    - name: Alternative Authentication (CLI)
+      if: env.AUTH_METHOD == 'cli'
+      shell: bash
+      run: |
+        echo "🔧 Setting up Terraform with existing Azure CLI session"
+        echo "⚠️  Note: This assumes you're running locally with 'az login --use-device-code'"
+        echo "For GitHub Actions, you'll need proper service principal credentials"
+        
+        # Set basic environment variables for Terraform
+        echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID || '2597dc73-3992-4b01-a65e-7f6e4779e9c6' }}" >> $GITHUB_ENV
+        echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID || '3e336171-d512-41a4-8f0d-01790f9543e0' }}" >> $GITHUB_ENV
+        echo "ARM_USE_CLI=true" >> $GITHUB_ENV
+
+    - name: Verify Azure Access
+      shell: bash
+      run: |
+        echo "🔍 Verifying Azure access..."
+        
+        # Check current authentication
+        az account show || {
+          echo "❌ No active Azure session found"
+          echo "💡 Run 'az login --use-device-code' locally"
+          exit 1
+        }
+        
+        # Set subscription
+        az account set --subscription ${{ inputs.ARM_SUBSCRIPTION_ID || '3e336171-d512-41a4-8f0d-01790f9543e0' }}
+        
+        # Verify resource group access
+        az group show --name oorja-dev-rg || {
+          echo "❌ Cannot access resource group oorja-dev-rg"
+          exit 1
+        }
+        
+        echo "✅ Azure authentication verified"
 
     - name: Setup Terraform (Local Backend)
       uses: hashicorp/setup-terraform@v3
@@ -61,20 +114,32 @@ runs:
     - name: Install Azure CLI Extensions
       shell: bash
       run: |
+        echo "📦 Installing Azure CLI extensions..."
         az extension add --name application-gateway --only-show-errors || true
         az extension add --name aks-preview --only-show-errors || true
+        echo "✅ Extensions installed"
         
     - name: Set Azure Environment Variables
       shell: bash
       run: |
-        if [ -n "${{ inputs.azure__client-id }}" ]; then
-          echo "ARM_CLIENT_ID=${{ inputs.azure__client-id }}" >> $GITHUB_ENV
-          echo "ARM_TENANT_ID=${{ inputs.azure__tenant-id }}" >> $GITHUB_ENV
-          echo "ARM_SUBSCRIPTION_ID=${{ inputs.azure__subscription-id }}" >> $GITHUB_ENV
-          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
-        elif [ -n "${{ inputs.ARM_CLIENT_ID }}" ]; then
-          echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
-          echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
-          echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-          echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-        fi
+        case "$AUTH_METHOD" in
+          "oidc")
+            echo "ARM_CLIENT_ID=${{ inputs.azure__client-id }}" >> $GITHUB_ENV
+            echo "ARM_TENANT_ID=${{ inputs.azure__tenant-id }}" >> $GITHUB_ENV
+            echo "ARM_SUBSCRIPTION_ID=${{ inputs.azure__subscription-id }}" >> $GITHUB_ENV
+            echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+            ;;
+          "service_principal")
+            echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
+            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
+            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+            ;;
+          "cli")
+            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID || '2597dc73-3992-4b01-a65e-7f6e4779e9c6' }}" >> $GITHUB_ENV
+            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID || '3e336171-d512-41a4-8f0d-01790f9543e0' }}" >> $GITHUB_ENV
+            echo "ARM_USE_CLI=true" >> $GITHUB_ENV
+            ;;
+        esac
+        
+        echo "✅ Environment variables set for method: $AUTH_METHOD"
