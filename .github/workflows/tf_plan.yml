@@ -1,4 +1,4 @@
-name: Terraform Plan
+name: Terraform Plan and Apply (Azure)
 
 on:
   repository_dispatch:
@@ -7,30 +7,43 @@ on:
   workflow_dispatch:
     inputs:
       target_branch:
-        description: '"Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
+        description: 'Branch name from the Terraform core repository'
         required: true
         type: string
+        default: 'main'
       environment:
-        description: 'Type of the deployment environment to use'
+        description: 'Deployment environment'
         required: true
         type: choice
         options: 
           - dev
           - staging
-          - prod  
-        
+          - prod
+        default: 'dev'
+      enable_genesis_gateway:
+        description: 'Enable Application Gateway for Genesis frontend'
+        required: false
+        type: boolean
+        default: true
+      apply_changes:
+        description: 'Apply changes after successful plan'
+        required: false
+        type: boolean
+        default: false
+
 permissions:
-      id-token: write
-      contents: read
+  id-token: write
+  contents: read
+  pull-requests: write
       
-jobs:    
-  plan:
+jobs:  
+  terraform:
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'repository_dispatch' &&
-       github.event.client_payload.tf-lifecycle == 'plan')
+       github.event.client_payload.tf-lifecycle == 'plan-apply')
     defaults:
       run:
         working-directory: .
@@ -38,10 +51,22 @@ jobs:
       TF_WORKING_DIR: 'terraform-configs' 
       TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
-      
+      AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
+
+    outputs: 
+      cluster_name: ${{ steps.finalizer.outputs.cluster_name }}
+      resource_group: ${{ steps.finalizer.outputs.resource_group }}
+      application_gateway_ip: ${{ steps.finalizer.outputs.application_gateway_ip }}
+      genesis_fqdn: ${{ steps.finalizer.outputs.genesis_fqdn }}
+
     steps: 
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+           version: 'v1.32.0'
           
       - name: Run Common Terraform Routines
         id: tf-routines
@@ -54,14 +79,18 @@ jobs:
           pat-token: ${{ secrets.GH_PAT }}
       
       - name: Run Terraform Auth Routine
-        uses: infra-workspaces/terraform-workflows/.github/actions/terraform-auth@oorja
+        uses: ./.github/actions/terraform-auth
         with:
-          azure__client-id: ${{ secrets.ARM_CLIENT_ID }}
-          azure__tenant-id: ${{ secrets.ARM_TENANT_ID }}
-          azure__subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-          hcp__tf-version: '1.6.6'
-          hcp__api-token: ${{ secrets.TF_API_TOKENC }}
-          
+          azure__client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure__tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure__subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          terraform__version: '1.6.6'
+
+      - name: Setup Genesis Secrets
+        if: ${{ inputs.enable_genesis_gateway == true }}
+        run: |
+          echo "GENESIS_PAT_TOKEN=${{ secrets.GENESIS_PAT_TOKEN }}" >> $GITHUB_ENV
+          echo "GENESIS_USER_ID=Harman-DTS" >> $GITHUB_ENV
 
       - name: Generate Cache key hash
         id: target-dir-hash
@@ -80,21 +109,9 @@ jobs:
             ${{ env.TF_WORKING_DIR }}/.terraform.lock.hcl
             ${{ env.TF_WORKING_DIR }}/.terraform/
 
-      - name: Get backend file
-        id: tfbackend
-        run: echo "file=$(find . -type f -regex '.*[^.]+\.\(tfbackend\|backend\)')" >> $GITHUB_OUTPUT
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        
-      - run: |
-          echo "${{ steps.tfbackend.outputs.file }}" "${{ steps.restore-cache.outputs.cache-hit }}"
-
-      - name: Terraform Init With Backend Config File
-        if: steps.tfbackend.outputs.file != '' && steps.restore-cache.outputs.cache-hit != 'true'
-        run: terraform init -input=false -backend-config=${{ steps.tfbackend.outputs.file }}
-        working-directory: ${{ env.TF_WORKING_DIR }}
-
-      - name: Terraform Init
-        if: steps.tfbackend.outputs.file == '' && steps.restore-cache.outputs.cache-hit != 'true'
+      # Local backend - no backend config file needed
+      - name: Terraform Init (Local Backend)
+        if: steps.restore-cache.outputs.cache-hit != 'true'
         run: terraform init -input=false
         working-directory: ${{ env.TF_WORKING_DIR }}
         
@@ -103,10 +120,214 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Plan
-        run: terraform plan -input=false
+        id: plan
+        run: |
+          echo "🔍 Running Terraform Plan..."
+          terraform plan -input=false -var-file="${{ env.ENVIRONMENT }}.tfvars" -out=tfplan
+          terraform show -no-color tfplan > tfplan.txt
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve
-        working-directory: ${{ env.FULL_WORKING_DIR }}
+      - name: Upload Plan Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ env.ENVIRONMENT }}
+          path: |
+            ${{ env.TF_WORKING_DIR }}/tfplan
+            ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          retention-days: 30
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/tfplan.txt', 'utf8');
+            
+            const comment = `## 🏗️ Terraform Plan Results for ${{ env.ENVIRONMENT }}
+            
+            ### Branch: ${{ env.TARGET_BRANCH }}
+            ### Genesis Gateway: ${{ inputs.enable_genesis_gateway }}
+            
+            <details>
+            <summary>📋 Show Plan Details</summary>
+            
+            \`\`\`hcl
+            ${planOutput}
+            \`\`\`
+            
+            </details>
+            
+            ${planOutput.includes('Plan:') ? '✅ Plan generated successfully' : '⚠️ No changes detected'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Terraform Apply
+        if: >
+          (github.event_name == 'workflow_dispatch' && inputs.apply_changes == true) ||
+          (github.event_name == 'repository_dispatch' && 
+           github.event.client_payload.tf-lifecycle == 'plan-apply' && 
+           github.event.client_payload.event_name != 'pull_request_target') ||
+          (github.ref == 'refs/heads/main' && github.event_name == 'push')
+        run: |
+          echo "🚀 Applying Terraform changes..."
+          terraform apply -auto-approve tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Post-Apply Finalizations
+        if: >
+          (github.event_name == 'workflow_dispatch' && inputs.apply_changes == true) ||
+          (github.event_name == 'repository_dispatch' && 
+           github.event.client_payload.tf-lifecycle == 'plan-apply' && 
+           github.event.client_payload.event_name != 'pull_request_target') ||
+          (github.ref == 'refs/heads/main' && github.event_name == 'push')
+        id: finalizer
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo "📊 Extracting Terraform outputs..."
+          
+          # Get cluster credentials if AKS exists
+          if terraform output cluster_name &>/dev/null; then
+            CLUSTER_NAME=$(terraform output -raw cluster_name)
+            RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+            
+            echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+            echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+            
+            # Update kubeconfig
+            az aks get-credentials --resource-group $RESOURCE_GROUP --name $CLUSTER_NAME --overwrite-existing
+            echo "✅ Kubeconfig updated for cluster: $CLUSTER_NAME"
+          fi
+          
+          # Get Application Gateway info if enabled
+          if [[ "${{ inputs.enable_genesis_gateway }}" == "true" ]] && terraform output application_gateway_public_ip &>/dev/null; then
+            APP_GW_IP=$(terraform output -raw application_gateway_public_ip)
+            GENESIS_FQDN="genesis-azure.d01.hdcss.com"
+            echo "application_gateway_ip=$APP_GW_IP" >> $GITHUB_OUTPUT
+            echo "genesis_fqdn=$GENESIS_FQDN" >> $GITHUB_OUTPUT
+            echo "🌐 Application Gateway IP: $APP_GW_IP"
+            echo "🎯 Genesis FQDN: $GENESIS_FQDN"
+          fi
+
+  genesis-argocd-setup:
+    needs: terraform
+    name: Genesis ArgoCD Configuration
+    if: >
+      inputs.enable_genesis_gateway == true &&
+      ((github.event_name == 'workflow_dispatch' && inputs.apply_changes == true) ||
+       (github.event_name == 'repository_dispatch' && 
+        github.event.client_payload.tf-lifecycle == 'plan-apply' && 
+        github.event.client_payload.event_name != 'pull_request_target') ||
+       (github.ref == 'refs/heads/main' && github.event_name == 'push'))
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+    env:
+      CLUSTER_NAME: ${{ needs.terraform.outputs.cluster_name }}
+      RESOURCE_GROUP: ${{ needs.terraform.outputs.resource_group }}
+      GENESIS_FQDN: ${{ needs.terraform.outputs.genesis_fqdn }}
+      APP_GATEWAY_IP: ${{ needs.terraform.outputs.application_gateway_ip }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.32.0'
+
+      - name: Update kubeconfig
+        run: |
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --overwrite-existing
+
+      - name: Setup Python and Dependencies
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install azure-keyvault-secrets azure-identity git+https://github.com/p1utoze/pyargocd.git
+
+      - name: Setup Genesis Secrets in Key Vault
+        run: |
+          echo "🔐 Setting up Genesis secrets in Azure Key Vault..."
+          
+          # Store Genesis credentials in Key Vault
+          az keyvault secret set \
+            --vault-name ${{ vars.AZURE_KEYVAULT_NAME }} \
+            --name "genesis-username" \
+            --value "Harman-DTS"
+          
+          az keyvault secret set \
+            --vault-name ${{ vars.AZURE_KEYVAULT_NAME }} \
+            --name "genesis-password" \
+            --value "${{ secrets.GENESIS_PAT_TOKEN }}"
+
+      - name: Install ArgoCD CLI
+        uses: ./.github/actions/setup-argocd-cli
+
+      - name: Configure ArgoCD Access
+        run: |
+          echo "🎯 Configuring ArgoCD access..."
+          
+          # Wait for ArgoCD to be ready
+          kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd || true
+          
+          # Get ArgoCD admin password
+          ARGOCD_PWD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+          
+          # Port forward to ArgoCD server
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          sleep 10
+          
+          # Login to ArgoCD
+          argocd login localhost:8080 --username admin --password $ARGOCD_PWD --insecure
+          
+          echo "✅ ArgoCD access configured"
+
+      - name: Deploy Genesis Projects via ArgoCD
+        run: |
+          echo "🚀 Deploying Genesis applications via ArgoCD..."
+          
+          # Set environment variables for template substitution
+          export username="Harman-DTS"
+          export password="${{ secrets.GENESIS_PAT_TOKEN }}"
+          
+          # Apply ArgoCD configurations from terraform-vars
+          python scripts/argocd-project.py -f terraform-vars/manifests/argocd-configs/project.yaml
+          python scripts/argocd-repository.py -f terraform-vars/manifests/argocd-configs/repository.yaml
+          python scripts/argocd-application.py -f terraform-vars/manifests/argocd-configs/application.yaml
+
+      - name: Verify Genesis Deployment
+        run: |
+          echo "🔍 Verifying Genesis deployment..."
+          
+          # Wait for Genesis applications to be healthy
+          timeout 600 bash -c '
+            while ! kubectl get pods -n genesis | grep -E "(frontend|backend|postgresql)" | grep -q "Running"; do
+              echo "Waiting for Genesis pods to be ready..."
+              sleep 30
+            done
+          '
+          
+          # Show Genesis services
+          kubectl get svc -n genesis
+          
+          echo "🎉 Genesis is now accessible through Application Gateway!"
+          echo "🌍 Frontend URL: https://${{ env.GENESIS_FQDN }}"
+          echo "📡 Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
