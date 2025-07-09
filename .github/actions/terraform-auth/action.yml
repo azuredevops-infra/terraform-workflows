@@ -1,12 +1,12 @@
-name: "Azure Terraform Authentication"
-description: "Emergency authentication bypassing service principal secrets"
+name: "Emergency Azure Auth"
+description: "Simple emergency authentication"
 
 inputs:
   ARM_TENANT_ID:
     description: "Azure Tenant ID"
     required: true
   ARM_SUBSCRIPTION_ID:
-    description: "Azure Subscription ID"
+    description: "Azure Subscription ID"  
     required: true
   terraform__version:
     description: "Terraform version"
@@ -15,159 +15,31 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Emergency Authentication Setup
-      shell: bash
-      run: |
-        echo "🚨 EMERGENCY MODE: Bypassing service principal authentication"
-        echo "🔧 Attempting alternative authentication methods..."
-        
-        # Check if Azure CLI is available
-        if ! command -v az &> /dev/null; then
-          echo "Installing Azure CLI..."
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-        fi
-        
-        echo "✅ Azure CLI available"
-        az version
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform__version }}
 
     - name: Disable Terraform Cloud
       shell: bash
       run: |
-        echo "🚫 Disabling Terraform Cloud authentication..."
-        
-        # Remove any existing Terraform Cloud configuration
+        echo "Disabling Terraform Cloud..."
         rm -f ~/.terraformrc 2>/dev/null || true
         rm -f ~/.terraform.d/credentials.tfrc.json 2>/dev/null || true
-        
-        # Clear Terraform Cloud environment variables
-        unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
-        unset TF_WORKSPACE 2>/dev/null || true
-        unset TF_TOKEN_app_terraform_io 2>/dev/null || true
-        unset TERRAFORM_CONFIG 2>/dev/null || true
-        
-        # Set environment variables to disable Terraform Cloud
-        echo "TF_CLI_CONFIG_FILE=/dev/null" >> $GITHUB_ENV
-        echo "TF_INPUT=false" >> $GITHUB_ENV
-        echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
-        
-        echo "✅ Terraform Cloud disabled"
-
-    - name: Try Environment-based Authentication
-      shell: bash
-      run: |
-        echo "🔍 Checking for available authentication methods..."
-        
-        # Method 1: Try managed identity (if available)
-        echo "Attempting managed identity authentication..."
-        if az login --identity --output none 2>/dev/null; then
-          echo "✅ Managed identity authentication successful"
-          echo "AUTH_METHOD=managed_identity" >> $GITHUB_ENV
-        else
-          echo "⚠️ Managed identity not available"
-          
-          # Method 2: Try service connection
-          echo "Attempting service connection..."
-          if az account show --output none 2>/dev/null; then
-            echo "✅ Existing Azure session found"
-            echo "AUTH_METHOD=existing_session" >> $GITHUB_ENV
-          else
-            echo "❌ No active authentication found"
-            echo "🔄 Will proceed with environment variables only"
-            echo "AUTH_METHOD=environment_only" >> $GITHUB_ENV
-          fi
-        fi
-
-    - name: Set Subscription Context
-      shell: bash
-      run: |
-        echo "🎯 Setting Azure subscription context..."
-        
-        if [ "$AUTH_METHOD" != "environment_only" ]; then
-          az account set --subscription ${{ inputs.ARM_SUBSCRIPTION_ID }}
-          az account show
-        fi
-        
-        echo "✅ Subscription context set"
-
-    - name: Setup Terraform (Local Backend Only)
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ inputs.terraform__version }}
-        cli_config_credentials_token: '' # Explicitly disable Terraform Cloud
-
-    - name: Configure Terraform for Local Backend
-      shell: bash
-      run: |
-        echo "🏠 Configuring Terraform for local backend only..."
-        
-        # Create a minimal Terraform CLI config that disables cloud
         mkdir -p ~/.terraform.d
-        cat > ~/.terraform.d/credentials.tfrc.json << 'EOF'
-{}
-EOF
-        
-        # Set Terraform environment variables for local operation
-        echo "TF_CLI_CONFIG_FILE=" >> $GITHUB_ENV
+        echo '{}' > ~/.terraform.d/credentials.tfrc.json
+
+    - name: Set Environment Variables
+      shell: bash
+      run: |
+        echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
+        echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+        echo "ARM_USE_CLI=true" >> $GITHUB_ENV
         echo "TF_INPUT=false" >> $GITHUB_ENV
         echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
-        
-        # Disable any Terraform Cloud integration
-        echo "TF_CLOUD_ORGANIZATION=" >> $GITHUB_ENV
-        echo "TF_WORKSPACE=" >> $GITHUB_ENV
-        
-        echo "✅ Terraform configured for local backend"
 
-    - name: Set Terraform Environment Variables
+    - name: Test Azure Access
       shell: bash
       run: |
-        echo "🔧 Setting Terraform environment variables..."
-        
-        case "$AUTH_METHOD" in
-          "managed_identity"|"existing_session")
-            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-            echo "ARM_USE_CLI=true" >> $GITHUB_ENV
-            ;;
-          "environment_only")
-            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-            echo "ARM_USE_CLI=true" >> $GITHUB_ENV
-            echo "ARM_SKIP_PROVIDER_REGISTRATION=true" >> $GITHUB_ENV
-            ;;
-        esac
-        
-        echo "✅ Terraform environment configured with method: $AUTH_METHOD"
-
-    - name: Verify Terraform Configuration
-      shell: bash
-      run: |
-        echo "🔍 Verifying Terraform configuration..."
-        
-        # Check Terraform version
-        terraform version
-        
-        # Verify no Terraform Cloud configuration
-        echo "📂 Terraform configuration directory:"
-        ls -la ~/.terraform.d/ 2>/dev/null || echo "No Terraform config directory"
-        
-        echo "🌐 Terraform Cloud environment variables:"
-        env | grep -E "^TF_" || echo "No TF_ environment variables found"
-        
-        echo "✅ Terraform configuration verified"
-
-    - name: Verify Access
-      shell: bash
-      run: |
-        echo "🔍 Verifying Azure access..."
-        
-        if [ "$AUTH_METHOD" != "environment_only" ]; then
-          # Test basic access
-          az account show || echo "⚠️ Azure account access limited"
-          
-          # Test resource group access
-          az group show --name oorja-dev-rg || echo "⚠️ Resource group access limited"
-        else
-          echo "⚠️ Running in environment-only mode - limited verification"
-        fi
-        
-        echo "✅ Access verification completed"
+        az version || echo "Azure CLI not available"
+        az account show 2>/dev/null || echo "No Azure session - will use environment variables"
