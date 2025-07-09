@@ -1,4 +1,4 @@
-name: "Azure Terraform Authentication - Emergency Mode"
+name: "Azure Terraform Authentication"
 description: "Emergency authentication bypassing service principal secrets"
 
 inputs:
