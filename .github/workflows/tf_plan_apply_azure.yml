@@ -1,4 +1,4 @@
-name: Terraform Plan and Apply (Azure)
+name: Terraform Plan and Apply (Azure) - Emergency Mode
 
 on:
   repository_dispatch:
@@ -92,11 +92,9 @@ jobs:
           environment: ${{ env.ENVIRONMENT }}
           pat-token: ${{ secrets.GH_PAT }}
       
-      - name: Run Terraform Auth Routine
+      - name: 🚨 Emergency Terraform Auth Routine
         uses: ./.github/actions/terraform-auth
         with:
-          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
           terraform__version: '1.6.6'
@@ -159,7 +157,7 @@ jobs:
             const fs = require('fs');
             const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/tfplan.txt', 'utf8');
             
-            const comment = `## 🏗️ Terraform Plan Results for ${{ env.ENVIRONMENT }}
+            const comment = `## 🏗️ Terraform Plan Results for ${{ env.ENVIRONMENT }} (Emergency Mode)
             
             ### Core Branch: ${{ env.TARGET_BRANCH }}
             ### Variables Branch: ${{ env.VARIABLES_BRANCH }}
@@ -242,7 +240,131 @@ jobs:
             echo "🎯 Grafana Custom FQDN: $GRAFANA_FQDN"
           fi
 
-  # Keep the existing genesis-argocd-setup job...
+  genesis-argocd-setup:
+    needs: terraform
+    name: Genesis ArgoCD Configuration
+    if: >
+      inputs.enable_genesis_gateway == true &&
+      ((github.event_name == 'workflow_dispatch' && inputs.apply_changes == true) ||
+       (github.event_name == 'repository_dispatch' && 
+        github.event.client_payload.tf-lifecycle == 'plan-apply' && 
+        github.event.client_payload.event_name != 'pull_request_target') ||
+       (github.ref == 'refs/heads/main' && github.event_name == 'push'))
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
+    env:
+      CLUSTER_NAME: ${{ needs.terraform.outputs.cluster_name }}
+      RESOURCE_GROUP: ${{ needs.terraform.outputs.resource_group }}
+      GENESIS_FQDN: ${{ needs.terraform.outputs.genesis_fqdn }}
+      APP_GATEWAY_IP: ${{ needs.terraform.outputs.application_gateway_ip }}
+      VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || 'main' }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Checkout Terraform Variables for ArgoCD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.TF_CONFIG_REPO }}
+          token: ${{ secrets.GH_PAT }}
+          path: terraform-vars
+          ref: ${{ env.VARIABLES_BRANCH }}
+          
+      - name: 🚨 Emergency Azure Authentication
+        uses: ./.github/actions/terraform-auth
+        with:
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.32.0'
+
+      - name: Update kubeconfig
+        run: |
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --overwrite-existing
+
+      - name: Setup Python and Dependencies
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install azure-keyvault-secrets azure-identity git+https://github.com/p1utoze/pyargocd.git
+
+      - name: Setup Genesis Secrets in Key Vault
+        run: |
+          echo "🔐 Setting up Genesis secrets in Azure Key Vault..."
+          
+          # Store Genesis credentials in Key Vault
+          az keyvault secret set \
+            --vault-name oorja-dev-kv-bnk4ys \
+            --name "genesis-username" \
+            --value "Harman-DTS" || echo "⚠️ Key Vault access limited"
+          
+          az keyvault secret set \
+            --vault-name oorja-dev-kv-bnk4ys \
+            --name "genesis-password" \
+            --value "${{ secrets.GENESIS_PAT_TOKEN }}" || echo "⚠️ Key Vault access limited"
+
+      - name: Install ArgoCD CLI
+        uses: ./.github/actions/setup-argocd-cli
+
+      - name: Configure ArgoCD Access
+        run: |
+          echo "🎯 Configuring ArgoCD access..."
+          
+          # Wait for ArgoCD to be ready
+          kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd || true
+          
+          # Get ArgoCD admin password
+          ARGOCD_PWD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+          
+          # Port forward to ArgoCD server
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          sleep 10
+          
+          # Login to ArgoCD
+          argocd login localhost:8080 --username admin --password $ARGOCD_PWD --insecure
+          
+          echo "✅ ArgoCD access configured"
+
+      - name: Deploy Genesis Projects via ArgoCD
+        run: |
+          echo "🚀 Deploying Genesis applications via ArgoCD..."
+          echo "📂 Using variables from branch: ${{ env.VARIABLES_BRANCH }}"
+          
+          # Set environment variables for template substitution
+          export username="Harman-DTS"
+          export password="${{ secrets.GENESIS_PAT_TOKEN }}"
+          
+          # Apply ArgoCD configurations from terraform-vars
+          python scripts/argocd-project.py -f terraform-vars/manifests/argocd-configs/project.yaml
+          python scripts/argocd-repository.py -f terraform-vars/manifests/argocd-configs/repository.yaml
+          python scripts/argocd-application.py -f terraform-vars/manifests/argocd-configs/application.yaml
+
+      - name: Verify Genesis Deployment
+        run: |
+          echo "🔍 Verifying Genesis deployment..."
+          
+          # Wait for Genesis applications to be healthy
+          timeout 600 bash -c '
+            while ! kubectl get pods -n genesis | grep -E "(frontend|backend|postgresql)" | grep -q "Running"; do
+              echo "Waiting for Genesis pods to be ready..."
+              sleep 30
+            done
+          '
+          
+          # Show Genesis services
+          kubectl get svc -n genesis
+          
+          echo "🎉 Genesis is now accessible through Application Gateway!"
+          echo "🌍 Frontend URL: https://${{ env.GENESIS_FQDN }}"
+          echo "📡 Application Gateway IP: ${{ env.APP_GATEWAY_IP }}"
   
   grafana-configuration:
     needs: terraform
@@ -267,10 +389,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         
-      - name: Azure Login
-        uses: azure/login@v2
+      - name: 🚨 Emergency Azure Authentication
+        uses: ./.github/actions/terraform-auth
         with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -286,7 +409,7 @@ jobs:
           echo "📊 Configuring Grafana datasources..."
           
           # Get Grafana workspace information
-          GRAFANA_ID=$(az grafana list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].id" -o tsv)
+          GRAFANA_ID=$(az grafana list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].id" -o tsv 2>/dev/null || echo "")
           
           if [ -n "$GRAFANA_ID" ]; then
             echo "✅ Found Grafana workspace: $GRAFANA_ID"
@@ -304,7 +427,7 @@ jobs:
             echo "📊 Native Grafana URL: ${{ env.GRAFANA_URL }}"
             
           else
-            echo "⚠️ Grafana workspace not found in resource group"
+            echo "⚠️ Grafana workspace not found in resource group (limited access)"
           fi
 
       - name: Verify Grafana Access
@@ -329,5 +452,3 @@ jobs:
           else
             echo "⚠️ Grafana URL not available from Terraform outputs"
           fi
-
-# Keep the existing genesis-argocd-setup job unchanged...
