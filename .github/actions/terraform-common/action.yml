@@ -29,17 +29,19 @@ runs:
     - name: Set Terraform Variable file path
       shell: bash
       run: |
-        echo "${{ inputs.environment }}"
-        echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
-
-    # - name: Parse Terraform variables
-    #   id: tfvars
-    #   uses: ./.github/actions/terraform-vars-parse
-    #   with:
-    #     file: ${{ env.VARFILE_RELPATH }}
-    #     pat-token: ${{ inputs.pat-token }}
-    #     target_branch: ${{ inputs.target_branch }} 
-    #     config_repo: ${{ inputs.config_repo }}
+        echo "Environment: ${{ inputs.environment }}"
+        # Try .tfvars.json first, then .tfvars
+        if [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars.json" ]; then
+          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars.json" >> $GITHUB_ENV
+        elif [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars" ]; then
+          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars" >> $GITHUB_ENV
+        else
+          echo "❌ No terraform variables file found for environment: ${{ inputs.environment }}"
+          echo "Expected: environments/${{ inputs.environment }}.tfvars.json or environments/${{ inputs.environment }}.tfvars"
+          exit 1
+        fi
 
     - name: Checkout Terraform Configs
       uses: actions/checkout@v4
@@ -59,52 +61,91 @@ runs:
         ref: ${{ inputs.target_branch }} 
         fetch-depth: ${{ inputs.fetch_depth }}
         
-    - name: Copy Auto TFVars File
+    - name: Verify and Copy Terraform Variables File
       shell: bash
-      run: cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars.json
-      
+      run: |
+        echo "🔍 Checking for terraform variables file..."
+        
+        # Check if the file exists and copy it
+        if [ -f "./terraform-vars/${{ env.VARFILE_RELPATH }}" ]; then
+          echo "✅ Found: ./terraform-vars/${{ env.VARFILE_RELPATH }}"
+          
+          # Copy with appropriate extension
+          if [ "${{ env.VARFILE_EXTENSION }}" = ".tfvars.json" ]; then
+            cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars.json
+            echo "📋 Copied as: ${{ inputs.environment }}.auto.tfvars.json"
+          else
+            cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars
+            echo "📋 Copied as: ${{ inputs.environment }}.auto.tfvars"
+          fi
+          
+          # Show first few lines for verification
+          echo "📄 File content preview:"
+          head -5 ./terraform-configs/${{ inputs.environment }}.auto.tfvars* || true
+        else
+          echo "❌ File not found: ./terraform-vars/${{ env.VARFILE_RELPATH }}"
+          echo "📂 Available files in ./terraform-vars/environments/:"
+          ls -la ./terraform-vars/environments/ || echo "Directory not found"
+          exit 1
+        fi
 
     - name: Find and move values.yml files
       shell: bash
       run: |
-        echo "Searching for values.yaml or values.yml files..."
-        found_files=$(find . -type f -regex '.*values.ya?ml')
+        echo "🔍 Searching for values.yaml or values.yml files..."
+        found_files=$(find ./terraform-vars -type f -regex '.*values\.ya?ml' 2>/dev/null || true)
 
         if [ -n "$found_files" ]; then
           for file in $found_files; do
-            echo "Moving $file to current directory..."
+            echo "📁 Moving $file to terraform-configs/..."
             mv "$file" ./terraform-configs/
           done
         else
-          echo "No matching files found. Skipping move."
+          echo "ℹ️  No values.yaml/yml files found. Skipping move."
         fi
 
     - name: Find and move Backend configuration files
       shell: bash
       run: |
-        echo "Searching for .backend or .tfbackend files..."
-        found_files=$(find . -type f -regex '.*[^.]+\.\(tfbackend\|backend\)')
+        echo "🔍 Searching for .backend or .tfbackend files..."
+        found_files=$(find ./terraform-vars -type f -regex '.*[^.]+\.\(tfbackend\|backend\)' 2>/dev/null || true)
+        
         if [ -n "$found_files" ]; then
           for file in $found_files; do
-            echo "Moving $file to current directory..."
-            base64 -d $file > config.${{ inputs.environment }}.tfbackend
-            mv "config.${{ inputs.environment }}.tfbackend" ./terraform-configs/
+            echo "🔐 Processing backend file: $file"
+            # Check if file is base64 encoded
+            if base64 -d "$file" &>/dev/null; then
+              echo "📄 Decoding base64 backend file..."
+              base64 -d "$file" > "./terraform-configs/config.${{ inputs.environment }}.tfbackend"
+            else
+              echo "📄 Copying plain backend file..."
+              cp "$file" "./terraform-configs/config.${{ inputs.environment }}.tfbackend"
+            fi
           done
         else
-          echo "No matching files found. Skipping move."
+          echo "ℹ️  No backend configuration files found. Using local backend."
         fi
         
     - name: Find and move Terraform template files
       shell: bash
       run: |
-        echo "Searching for .tftpl or .tpl files..."
-        found_files=$(find . -type f -regex '.*values\.t[^/]*pl')
+        echo "🔍 Searching for .tftpl or .tpl files..."
+        found_files=$(find ./terraform-vars -type f -regex '.*values\.t[^/]*pl' 2>/dev/null || true)
 
         if [ -n "$found_files" ]; then
           for file in $found_files; do
-            echo "Moving $file to current directory..."
+            echo "📁 Moving template file: $file"
             mv "$file" ./terraform-configs/
           done
         else
-          echo "No matching files found. Skipping move."
+          echo "ℹ️  No template files found. Skipping move."
         fi
+
+    - name: Debug - List terraform-configs directory
+      shell: bash
+      run: |
+        echo "📂 Contents of terraform-configs directory:"
+        ls -la ./terraform-configs/
+        echo ""
+        echo "🔍 Terraform variable files:"
+        ls -la ./terraform-configs/*.tfvars* 2>/dev/null || echo "No .tfvars files found"
