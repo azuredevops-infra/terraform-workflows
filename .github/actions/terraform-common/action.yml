@@ -16,6 +16,10 @@ inputs:
     description: 'Name of the branch that has terraform root module configuration'
     required: true
     default: 'main'
+  variables_branch:
+    description: 'Name of the branch that has terraform variables configuration'
+    required: false
+    default: 'main'
   environment:
     description: 'Variables file to select based on the type of environment'
     required: true
@@ -26,22 +30,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Set Terraform Variable file path
+    - name: Set Branch Variables
       shell: bash
       run: |
-        echo "Environment: ${{ inputs.environment }}"
-        # Try .tfvars.json first, then .tfvars
-        if [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars.json" ]; then
-          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
-          echo "VARFILE_EXTENSION=.tfvars.json" >> $GITHUB_ENV
-        elif [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars" ]; then
-          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars" >> $GITHUB_ENV
-          echo "VARFILE_EXTENSION=.tfvars" >> $GITHUB_ENV
-        else
-          echo "❌ No terraform variables file found for environment: ${{ inputs.environment }}"
-          echo "Expected: environments/${{ inputs.environment }}.tfvars.json or environments/${{ inputs.environment }}.tfvars"
-          exit 1
-        fi
+        echo "🔍 Repository branches:"
+        echo "  Core repository branch: ${{ inputs.target_branch }}"
+        echo "  Variables repository branch: ${{ inputs.variables_branch || inputs.target_branch }}"
+        echo "  Environment: ${{ inputs.environment }}"
 
     - name: Checkout Terraform Configs
       uses: actions/checkout@v4
@@ -58,8 +53,25 @@ runs:
         repository: ${{ inputs.config_repo }} 
         token: ${{ inputs.pat-token }}
         path: terraform-vars
-        ref: ${{ inputs.target_branch }} 
+        ref: ${{ inputs.variables_branch || inputs.target_branch }}
         fetch-depth: ${{ inputs.fetch_depth }}
+
+    - name: Set Terraform Variable file path
+      shell: bash
+      run: |
+        echo "Environment: ${{ inputs.environment }}"
+        # Try .tfvars.json first, then .tfvars
+        if [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars.json" ]; then
+          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars.json" >> $GITHUB_ENV
+        elif [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars" ]; then
+          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars" >> $GITHUB_ENV
+        else
+          echo "❌ No terraform variables file found for environment: ${{ inputs.environment }}"
+          echo "Expected: environments/${{ inputs.environment }}.tfvars.json or environments/${{ inputs.environment }}.tfvars"
+          exit 1
+        fi
         
     - name: Verify and Copy Terraform Variables File
       shell: bash
@@ -149,3 +161,7 @@ runs:
         echo ""
         echo "🔍 Terraform variable files:"
         ls -la ./terraform-configs/*.tfvars* 2>/dev/null || echo "No .tfvars files found"
+        echo ""
+        echo "🎯 Branch Information:"
+        echo "  Core repo (terraform-configs): ${{ inputs.target_branch }}"
+        echo "  Variables repo (terraform-vars): ${{ inputs.variables_branch || inputs.target_branch }}"
