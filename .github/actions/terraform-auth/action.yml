@@ -1,172 +1,131 @@
-name: "Azure Terraform Authentication - Emergency Mode"
-description: "Emergency authentication bypassing service principal secrets"
+name: "Azure Terraform Authentication"
+description: |
+  Centralized authentication for Azure with OIDC support and Azure Key Vault integration.
+  Supports local backend (no HCP cloud dependency).
 
 inputs:
+  # Azure OIDC Configuration
+  azure__client-id:
+    description: "Azure Client ID for OIDC authentication"
+    required: false
+  azure__tenant-id:
+    description: "Azure Tenant ID for OIDC authentication"  
+    required: false
+  azure__subscription-id:
+    description: "Azure Subscription ID for OIDC authentication"
+    required: false
+  
+  # Legacy Support
+  ARM_CLIENT_ID:
+    description: "Azure Client ID for service principal"
+    required: false
+  ARM_CLIENT_SECRET:
+    description: "Azure Client Secret for service principal"
+    required: false
   ARM_TENANT_ID:
     description: "Azure Tenant ID"
-    required: true
+    required: false
   ARM_SUBSCRIPTION_ID:
     description: "Azure Subscription ID"
-    required: true
+    required: false
+  
+  # Terraform Configuration
   terraform__version:
-    description: "Terraform version"
+    description: "Terraform version to install"
     default: '1.6.6'
     
 runs:
   using: composite
   steps:
-    - name: Emergency Authentication Setup
+    - name: Validate Azure Credentials
       shell: bash
       run: |
-        echo "🚨 EMERGENCY MODE: Bypassing service principal authentication"
-        echo "🔧 Attempting alternative authentication methods..."
+        echo "🔍 Validating Azure credentials..."
         
-        # Check if Azure CLI is available
-        if ! command -v az &> /dev/null; then
-          echo "Installing Azure CLI..."
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-        fi
-        
-        echo "✅ Azure CLI available"
-        az version
-
-    - name: Disable Terraform Cloud
-      shell: bash
-      run: |
-        echo "🚫 Disabling Terraform Cloud authentication..."
-        
-        # Remove any existing Terraform Cloud configuration
-        rm -f ~/.terraformrc 2>/dev/null || true
-        rm -f ~/.terraform.d/credentials.tfrc.json 2>/dev/null || true
-        
-        # Clear Terraform Cloud environment variables
-        unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
-        unset TF_WORKSPACE 2>/dev/null || true
-        unset TF_TOKEN_app_terraform_io 2>/dev/null || true
-        unset TERRAFORM_CONFIG 2>/dev/null || true
-        
-        # Set environment variables to disable Terraform Cloud
-        echo "TF_CLI_CONFIG_FILE=/dev/null" >> $GITHUB_ENV
-        echo "TF_INPUT=false" >> $GITHUB_ENV
-        echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
-        
-        echo "✅ Terraform Cloud disabled"
-
-    - name: Try Environment-based Authentication
-      shell: bash
-      run: |
-        echo "🔍 Checking for available authentication methods..."
-        
-        # Method 1: Try managed identity (if available)
-        echo "Attempting managed identity authentication..."
-        if az login --identity --output none 2>/dev/null; then
-          echo "✅ Managed identity authentication successful"
-          echo "AUTH_METHOD=managed_identity" >> $GITHUB_ENV
-        else
-          echo "⚠️ Managed identity not available"
+        if [ -n "${{ inputs.azure__client-id }}" ]; then
+          echo "✅ Using OIDC authentication"
+          echo "Client ID: ${{ inputs.azure__client-id }}"
+          echo "Tenant ID: ${{ inputs.azure__tenant-id }}"
+          echo "Subscription ID: ${{ inputs.azure__subscription-id }}"
+        elif [ -n "${{ inputs.ARM_CLIENT_ID }}" ]; then
+          echo "✅ Using Service Principal authentication"
+          echo "Client ID: ${{ inputs.ARM_CLIENT_ID }}"
+          echo "Tenant ID: ${{ inputs.ARM_TENANT_ID }}"
+          echo "Subscription ID: ${{ inputs.ARM_SUBSCRIPTION_ID }}"
           
-          # Method 2: Try service connection
-          echo "Attempting service connection..."
-          if az account show --output none 2>/dev/null; then
-            echo "✅ Existing Azure session found"
-            echo "AUTH_METHOD=existing_session" >> $GITHUB_ENV
-          else
-            echo "❌ No active authentication found"
-            echo "🔄 Will proceed with environment variables only"
-            echo "AUTH_METHOD=environment_only" >> $GITHUB_ENV
+          # Validate secret format
+          SECRET="${{ inputs.ARM_CLIENT_SECRET }}"
+          if [ ${#SECRET} -lt 10 ]; then
+            echo "❌ Client secret appears to be too short"
+            exit 1
           fi
+          
+          if [[ ! "$SECRET" =~ ^[A-Za-z0-9~._-]+$ ]]; then
+            echo "❌ Client secret contains invalid characters"
+            exit 1
+          fi
+          
+          echo "✅ Client secret format appears valid"
+        else
+          echo "❌ No Azure credentials provided"
+          exit 1
         fi
 
-    - name: Set Subscription Context
-      shell: bash
-      run: |
-        echo "🎯 Setting Azure subscription context..."
-        
-        if [ "$AUTH_METHOD" != "environment_only" ]; then
-          az account set --subscription ${{ inputs.ARM_SUBSCRIPTION_ID }}
-          az account show
-        fi
-        
-        echo "✅ Subscription context set"
-
-    - name: Setup Terraform Local Backend Only
-      uses: hashicorp/setup-terraform@v3
+    - name: Configure Azure Credentials (OIDC)
+      if: ${{ inputs.azure__client-id != '' && inputs.azure__tenant-id != '' }}
+      uses: azure/login@v2
       with:
-        terraform_version: ${{ inputs.terraform__version }}
+        client-id: ${{ inputs.azure__client-id }}
+        tenant-id: ${{ inputs.azure__tenant-id }}
+        subscription-id: ${{ inputs.azure__subscription-id }}
+        enable-AzPSSession: true
 
-    - name: Configure Terraform for Local Backend
-      shell: bash
-      run: |
-        echo "🏠 Configuring Terraform for local backend only..."
-        
-        # Create a minimal Terraform CLI config that disables cloud
-        mkdir -p ~/.terraform.d
-        cat > ~/.terraform.d/credentials.tfrc.json << 'EOF'
-        {}
-        EOF
-        
-        # Set Terraform environment variables for local operation
-        echo "TF_CLI_CONFIG_FILE=" >> $GITHUB_ENV
-        echo "TF_INPUT=false" >> $GITHUB_ENV
-        echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
-        
-        # Disable any Terraform Cloud integration
-        echo "TF_CLOUD_ORGANIZATION=" >> $GITHUB_ENV
-        echo "TF_WORKSPACE=" >> $GITHUB_ENV
-        
-        echo "✅ Terraform configured for local backend"
+    - name: Configure Azure Credentials (Service Principal)
+      if: ${{ inputs.ARM_CLIENT_ID != '' && inputs.ARM_CLIENT_SECRET != '' }}
+      uses: azure/login@v2
+      with:
+        creds: '{"clientId":"${{ inputs.ARM_CLIENT_ID }}","clientSecret":"${{ inputs.ARM_CLIENT_SECRET }}","subscriptionId":"${{ inputs.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ inputs.ARM_TENANT_ID }}"}'
+        enable-AzPSSession: true
 
-    - name: Set Terraform Environment Variables
-      shell: bash
-      run: |
-        echo "🔧 Setting Terraform environment variables..."
-        
-        case "$AUTH_METHOD" in
-          "managed_identity"|"existing_session")
-            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-            echo "ARM_USE_CLI=true" >> $GITHUB_ENV
-            ;;
-          "environment_only")
-            echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
-            echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-            echo "ARM_USE_CLI=true" >> $GITHUB_ENV
-            echo "ARM_SKIP_PROVIDER_REGISTRATION=true" >> $GITHUB_ENV
-            ;;
-        esac
-        
-        echo "✅ Terraform environment configured with method: $AUTH_METHOD"
-
-    - name: Verify Terraform Configuration
-      shell: bash
-      run: |
-        echo "🔍 Verifying Terraform configuration..."
-        
-        # Check Terraform version
-        terraform version
-        
-        # Verify no Terraform Cloud configuration
-        echo "📂 Terraform configuration directory:"
-        ls -la ~/.terraform.d/ 2>/dev/null || echo "No Terraform config directory"
-        
-        echo "🌐 Terraform Cloud environment variables:"
-        env | grep -E "^TF_" || echo "No TF_ environment variables found"
-        
-        echo "✅ Terraform configuration verified"
-
-    - name: Verify Access
+    - name: Verify Azure Access
       shell: bash
       run: |
         echo "🔍 Verifying Azure access..."
         
-        if [ "$AUTH_METHOD" != "environment_only" ]; then
-          # Test basic access
-          az account show || echo "⚠️ Azure account access limited"
-          
-          # Test resource group access
-          az group show --name oorja-dev-rg || echo "⚠️ Resource group access limited"
-        else
-          echo "⚠️ Running in environment-only mode - limited verification"
+        # Test Azure CLI access
+        az account show
+        
+        # Verify subscription access
+        az account set --subscription ${{ inputs.ARM_SUBSCRIPTION_ID || inputs.azure__subscription-id }}
+        
+        echo "✅ Azure authentication successful"
+
+    - name: Setup Terraform (Local Backend)
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform__version }}
+
+    - name: Install Azure CLI Extensions
+      shell: bash
+      run: |
+        echo "📦 Installing Azure CLI extensions..."
+        az extension add --name application-gateway --only-show-errors || true
+        az extension add --name aks-preview --only-show-errors || true
+        echo "✅ Extensions installed"
+        
+    - name: Set Azure Environment Variables
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.azure__client-id }}" ]; then
+          echo "ARM_CLIENT_ID=${{ inputs.azure__client-id }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ inputs.azure__tenant-id }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ inputs.azure__subscription-id }}" >> $GITHUB_ENV
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+        elif [ -n "${{ inputs.ARM_CLIENT_ID }}" ]; then
+          echo "ARM_CLIENT_ID=${{ inputs.ARM_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=${{ inputs.ARM_CLIENT_SECRET }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ inputs.ARM_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ inputs.ARM_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
         fi
         
-        echo "✅ Access verification completed"
+        echo "✅ Environment variables set"
