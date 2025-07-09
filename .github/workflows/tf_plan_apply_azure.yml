@@ -10,12 +10,12 @@ on:
         description: 'Branch name from the Terraform core repository'
         required: true
         type: string
-        default: 'main'
+        default: '2.1'
       variables_branch:
         description: 'Branch name from the Terraform variables repository'
         required: true
         type: string
-        default: 'main'
+        default: '2.1'
       environment:
         description: 'Deployment environment'
         required: true
@@ -60,7 +60,7 @@ jobs:
     env:
       TF_WORKING_DIR: 'terraform-configs' 
       TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
-      VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || 'main' }}
+      VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || '2.1' }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
       AZURE_KEYVAULT_URL: ${{ vars.AZURE_KEYVAULT_URL }}
       TF_CLI_CONFIG_FILE: ""
@@ -149,14 +149,6 @@ jobs:
           mkdir -p ~/.terraform.d
           echo '{}' > ~/.terraform.d/credentials.tfrc.json
           
-          # Clear ALL Terraform-related environment variables
-          unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
-          unset TF_WORKSPACE 2>/dev/null || true
-          unset TF_TOKEN_app_terraform_io 2>/dev/null || true
-          unset TERRAFORM_CONFIG 2>/dev/null || true
-          unset TFC_TOKEN 2>/dev/null || true
-          unset TERRAFORM_CLOUD_TOKEN 2>/dev/null || true
-          
           # Create a clean versions.tf file with ONLY local backend
           cat > versions_clean.tf << 'EOF'
           terraform {
@@ -202,7 +194,7 @@ jobs:
           echo "📂 Current directory contents:"
           ls -la
 
-      - name: Terraform Init (Clean Local Backend)
+      - name: Terraform Init (Fixed Local Backend)
         if: steps.restore-cache.outputs.cache-hit != 'true'
         run: |
           echo "🏠 Clean initialization with local backend..."
@@ -213,14 +205,12 @@ jobs:
             sed -i '/cloud\|remote/d' versions.tf
           fi
           
-          # Initialize with explicit local backend
+          # Initialize with correct flags for local backend
           terraform init \
             -input=false \
-            -backend=true \
             -force-copy \
-            -get=true \
-            -upgrade=false \
-            -verify-plugins=true
+            -get \
+            -reconfigure
           
           echo "✅ Terraform initialized with local backend"
           
@@ -358,7 +348,7 @@ jobs:
       RESOURCE_GROUP: ${{ needs.terraform.outputs.resource_group }}
       GENESIS_FQDN: ${{ needs.terraform.outputs.genesis_fqdn }}
       APP_GATEWAY_IP: ${{ needs.terraform.outputs.application_gateway_ip }}
-      VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || 'main' }}
+      VARIABLES_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.variables_branch || github.event.client_payload.variables_branch || github.event.client_payload.target_branch || '2.1' }}
       
     steps:
       - name: Checkout code
