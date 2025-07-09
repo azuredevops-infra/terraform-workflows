@@ -54,14 +54,13 @@ jobs:
           pat-token: ${{ secrets.GH_PAT }}
       
       - name: Run Terraform Auth Routine
-        uses: ./.github/actions/terraform-auth
+        uses: infra-workspaces/terraform-workflows/.github/actions/terraform-auth@oorja
         with:
-          aws__oidc-arn: ${{ vars.AWS_OIDC_ARN }}
-          aws__region: 'us-east-1'
-          aws__access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws__secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          hcp__tf-version: '1.11.3'
-          hcp__api-token: ${{ secrets.TF_API_TOKEN }}
+          azure__client-id: ${{ secrets.ARM_CLIENT_ID }}
+          azure__tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          azure__subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          hcp__tf-version: '1.6.6'
+          hcp__api-token: ${{ secrets.TF_API_TOKENC }}
           
 
       - name: Generate Cache key hash
@@ -106,3 +105,8 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -input=false
         working-directory: ${{ env.TF_WORKING_DIR }}
+
+       - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve
+        working-directory: ${{ env.FULL_WORKING_DIR }}
