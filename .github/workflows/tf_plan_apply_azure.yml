@@ -122,10 +122,44 @@ jobs:
             ${{ env.TF_WORKING_DIR }}/.terraform.lock.hcl
             ${{ env.TF_WORKING_DIR }}/.terraform/
 
-      # Local backend - no backend config file needed
+      - name: 🚫 Force Disable Terraform Cloud
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo "🚫 EMERGENCY: Forcefully disabling Terraform Cloud..."
+          
+          # Remove any Terraform Cloud configuration files
+          rm -f ~/.terraformrc 2>/dev/null || true
+          rm -f ~/.terraform.d/credentials.tfrc.json 2>/dev/null || true
+          rm -f .terraform/terraform.tfplan 2>/dev/null || true
+          
+          # Create empty credentials file
+          mkdir -p ~/.terraform.d
+          echo '{}' > ~/.terraform.d/credentials.tfrc.json
+          
+          # Clear any Terraform Cloud environment variables
+          unset TF_CLOUD_ORGANIZATION 2>/dev/null || true
+          unset TF_WORKSPACE 2>/dev/null || true
+          unset TF_TOKEN_app_terraform_io 2>/dev/null || true
+          unset TERRAFORM_CONFIG 2>/dev/null || true
+          
+          # Verify backend configuration
+          echo "📋 Current backend configuration:"
+          grep -A 10 "backend" versions.tf || echo "No backend found in versions.tf"
+          
+          # Set environment variables to force local backend
+          echo "TF_CLI_CONFIG_FILE=" >> $GITHUB_ENV
+          echo "TF_INPUT=false" >> $GITHUB_ENV
+          echo "TF_IN_AUTOMATION=true" >> $GITHUB_ENV
+          echo "TF_CLOUD_ORGANIZATION=" >> $GITHUB_ENV
+          echo "TF_WORKSPACE=" >> $GITHUB_ENV
+          
+          echo "✅ Terraform Cloud forcefully disabled"
+
       - name: Terraform Init (Local Backend)
         if: steps.restore-cache.outputs.cache-hit != 'true'
-        run: terraform init -input=false
+        run: |
+          echo "🏠 Initializing Terraform with local backend..."
+          terraform init -input=false -backend=true -upgrade=false
         working-directory: ${{ env.TF_WORKING_DIR }}
         
       - name: Terraform Validate
