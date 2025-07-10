@@ -60,17 +60,43 @@ runs:
       shell: bash
       run: |
         echo "Environment: ${{ inputs.environment }}"
-        # Try .tfvars.json first, then .tfvars
-        if [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars.json" ]; then
-          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars.json" >> $GITHUB_ENV
-          echo "VARFILE_EXTENSION=.tfvars.json" >> $GITHUB_ENV
-        elif [ -f "./terraform-vars/environments/${{ inputs.environment }}.tfvars" ]; then
-          echo "VARFILE_RELPATH=environments/${{ inputs.environment }}.tfvars" >> $GITHUB_ENV
-          echo "VARFILE_EXTENSION=.tfvars" >> $GITHUB_ENV
-        else
+        
+        # Check for different possible file locations and extensions
+        POSSIBLE_FILES=(
+          "./terraform-vars/environments/${{ inputs.environment }}.tfvars.json"
+          "./terraform-vars/environments/${{ inputs.environment }}.tfvars"
+          "./terraform-vars/${{ inputs.environment }}.tfvars.json"
+          "./terraform-vars/${{ inputs.environment }}.tfvars"
+        )
+        
+        FOUND_FILE=""
+        for file in "${POSSIBLE_FILES[@]}"; do
+          if [ -f "$file" ]; then
+            FOUND_FILE="$file"
+            echo "✅ Found variables file: $file"
+            break
+          fi
+        done
+        
+        if [ -z "$FOUND_FILE" ]; then
           echo "❌ No terraform variables file found for environment: ${{ inputs.environment }}"
-          echo "Expected: environments/${{ inputs.environment }}.tfvars.json or environments/${{ inputs.environment }}.tfvars"
+          echo "Searched in:"
+          for file in "${POSSIBLE_FILES[@]}"; do
+            echo "  - $file"
+          done
+          echo ""
+          echo "📂 Available files in terraform-vars:"
+          find ./terraform-vars -name "*.tfvars*" -type f || echo "No .tfvars files found"
           exit 1
+        fi
+        
+        # Set environment variables based on found file
+        if [[ "$FOUND_FILE" == *.tfvars.json ]]; then
+          echo "VARFILE_RELPATH=${FOUND_FILE#./terraform-vars/}" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars.json" >> $GITHUB_ENV
+        else
+          echo "VARFILE_RELPATH=${FOUND_FILE#./terraform-vars/}" >> $GITHUB_ENV
+          echo "VARFILE_EXTENSION=.tfvars" >> $GITHUB_ENV
         fi
         
     - name: Verify and Copy Terraform Variables File
@@ -78,29 +104,40 @@ runs:
       run: |
         echo "🔍 Checking for terraform variables file..."
         
-        # Check if the file exists and copy it
-        if [ -f "./terraform-vars/${{ env.VARFILE_RELPATH }}" ]; then
-          echo "✅ Found: ./terraform-vars/${{ env.VARFILE_RELPATH }}"
+        SOURCE_FILE="./terraform-vars/${{ env.VARFILE_RELPATH }}"
+        
+        if [ -f "$SOURCE_FILE" ]; then
+          echo "✅ Found: $SOURCE_FILE"
           
-          # Copy with appropriate extension
+          # Copy with appropriate extension to terraform-configs directory
           if [ "${{ env.VARFILE_EXTENSION }}" = ".tfvars.json" ]; then
-            cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars.json
-            echo "📋 Copied as: ${{ inputs.environment }}.auto.tfvars.json"
+            TARGET_FILE="./terraform-configs/${{ inputs.environment }}.auto.tfvars.json"
+            cp -p "$SOURCE_FILE" "$TARGET_FILE"
+            echo "📋 Copied as: $TARGET_FILE"
           else
-            cp -p ./terraform-vars/${{ env.VARFILE_RELPATH }} ./terraform-configs/${{ inputs.environment }}.auto.tfvars
-            echo "📋 Copied as: ${{ inputs.environment }}.auto.tfvars"
+            TARGET_FILE="./terraform-configs/${{ inputs.environment }}.auto.tfvars"
+            cp -p "$SOURCE_FILE" "$TARGET_FILE"
+            echo "📋 Copied as: $TARGET_FILE"
           fi
           
-          # Show first few lines for verification
-          echo "📄 File content preview:"
-          head -5 ./terraform-configs/${{ inputs.environment }}.auto.tfvars* || true
+          # Verify the copy was successful
+          if [ -f "$TARGET_FILE" ]; then
+            echo "✅ File successfully copied to terraform-configs directory"
+            echo "📄 File content preview:"
+            head -5 "$TARGET_FILE" || true
+          else
+            echo "❌ Failed to copy file to terraform-configs directory"
+            exit 1
+          fi
+          
         else
-          echo "❌ File not found: ./terraform-vars/${{ env.VARFILE_RELPATH }}"
-          echo "📂 Available files in ./terraform-vars/environments/:"
-          ls -la ./terraform-vars/environments/ || echo "Directory not found"
+          echo "❌ File not found: $SOURCE_FILE"
+          echo "📂 Available files in ./terraform-vars/:"
+          find ./terraform-vars -name "*.tfvars*" -type f || echo "No .tfvars files found"
           exit 1
         fi
 
+    # Rest of your existing steps...
     - name: Find and move values.yml files
       shell: bash
       run: |
@@ -161,6 +198,9 @@ runs:
         echo ""
         echo "🔍 Terraform variable files:"
         ls -la ./terraform-configs/*.tfvars* 2>/dev/null || echo "No .tfvars files found"
+        echo ""
+        echo "🔍 All files in terraform-configs:"
+        find ./terraform-configs -type f | head -20
         echo ""
         echo "🎯 Branch Information:"
         echo "  Core repo (terraform-configs): ${{ inputs.target_branch }}"
