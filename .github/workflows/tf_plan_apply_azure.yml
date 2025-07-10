@@ -138,7 +138,7 @@ jobs:
         id: plan
         run: |
           echo "🔍 Running Terraform Plan..."
-          terraform plan -input=false -var-file="${{ env.ENVIRONMENT }}.tfvars" -out=tfplan
+          terraform plan -input=false -var-file="${{ env.ENVIRONMENT }}.auto.tfvars" -out=tfplan
           terraform show -no-color tfplan > tfplan.txt
         working-directory: ${{ env.TF_WORKING_DIR }}
 
