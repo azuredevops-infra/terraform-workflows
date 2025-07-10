@@ -134,12 +134,72 @@ jobs:
         run: terraform validate
         working-directory: ${{ env.TF_WORKING_DIR }}
 
+      - name: Debug Files Before Plan
+        run: |
+          echo "🔍 Pre-plan debug information:"
+          echo "Working directory: $(pwd)"
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo ""
+          echo "📂 All files in current directory:"
+          ls -la
+          echo ""
+          echo "🔍 Looking for tfvars files:"
+          find . -name "*tfvars*" -type f 2>/dev/null || echo "No tfvars files found"
+          echo ""
+          echo "🎯 Specifically looking for:"
+          echo "  - ${{ env.ENVIRONMENT }}.auto.tfvars"
+          echo "  - ${{ env.ENVIRONMENT }}.auto.tfvars.json" 
+          echo "  - ${{ env.ENVIRONMENT }}.tfvars"
+          
+          for file in "${{ env.ENVIRONMENT }}.auto.tfvars" "${{ env.ENVIRONMENT }}.auto.tfvars.json" "${{ env.ENVIRONMENT }}.tfvars"; do
+            if [ -f "$file" ]; then
+              echo "✅ Found: $file"
+              echo "📄 File size: $(wc -c < "$file") bytes"
+            else
+              echo "❌ Missing: $file"
+            fi
+          done
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
       - name: Terraform Plan
         id: plan
         run: |
           echo "🔍 Running Terraform Plan..."
-          terraform plan -input=false -var-file="${{ env.ENVIRONMENT }}.auto.tfvars" -out=tfplan
+          echo "Working directory: $(pwd)"
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo ""
+          
+          # Check for different possible tfvars files in order of preference
+          TFVARS_FILE=""
+          
+          if [ -f "${{ env.ENVIRONMENT }}.auto.tfvars.json" ]; then
+            TFVARS_FILE="${{ env.ENVIRONMENT }}.auto.tfvars.json"
+            echo "✅ Using JSON variables file: $TFVARS_FILE"
+          elif [ -f "${{ env.ENVIRONMENT }}.auto.tfvars" ]; then
+            TFVARS_FILE="${{ env.ENVIRONMENT }}.auto.tfvars"
+            echo "✅ Using auto variables file: $TFVARS_FILE"
+          elif [ -f "${{ env.ENVIRONMENT }}.tfvars" ]; then
+            TFVARS_FILE="${{ env.ENVIRONMENT }}.tfvars"
+            echo "✅ Using standard variables file: $TFVARS_FILE"
+          else
+            echo "❌ No variables file found for environment: ${{ env.ENVIRONMENT }}"
+            echo "📂 Available files:"
+            ls -la *.tfvars* 2>/dev/null || echo "No .tfvars files found"
+            echo "📂 All files:"
+            ls -la
+            exit 1
+          fi
+          
+          echo "📄 Variables file preview:"
+          head -5 "$TFVARS_FILE"
+          echo ""
+          
+          echo "🚀 Running terraform plan with file: $TFVARS_FILE"
+          terraform plan -input=false -var-file="$TFVARS_FILE" -out=tfplan
+          
+          echo "📋 Generating plan output..."
           terraform show -no-color tfplan > tfplan.txt
+          echo "✅ Terraform plan completed successfully"
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Upload Plan Output
@@ -242,8 +302,6 @@ jobs:
             echo "🎯 Grafana Custom FQDN: $GRAFANA_FQDN"
           fi
 
-  # Keep the existing genesis-argocd-setup job...
-  
   grafana-configuration:
     needs: terraform
     name: Grafana Dashboard Configuration
@@ -270,7 +328,13 @@ jobs:
       - name: Azure Login
         uses: azure/login@v2
         with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+          creds: |
+            {
+              "clientId": "${{ secrets.ARM_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.ARM_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.ARM_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.ARM_TENANT_ID }}"
+            }
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -329,5 +393,3 @@ jobs:
           else
             echo "⚠️ Grafana URL not available from Terraform outputs"
           fi
-
-# Keep the existing genesis-argocd-setup job unchanged...
