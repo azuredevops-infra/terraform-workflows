@@ -189,7 +189,7 @@ jobs:
             # For ArgoCD behind a reverse proxy with custom path, we might need to use the full URL
             argocd login genesis-azure.d01.hdcss.com/admin --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
             
-            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com/admin
+            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com/
             export ARGOCD_OPTS="--insecure"
             
           else
