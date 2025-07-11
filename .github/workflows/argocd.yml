@@ -1,4 +1,3 @@
-
 name: ArgoCD Apply By Service
 
 on:
@@ -8,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       target_branch:
-        description: '"Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
+        description: 'Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
         required: true
         type: string
       environment:
@@ -26,6 +25,10 @@ on:
           - project
           - repository
           - application
+      use_external_url:
+        description: 'Use external ArgoCD URL instead of port-forward'
+        type: boolean
+        default: true
         
 permissions:
       id-token: write
@@ -46,15 +49,22 @@ jobs:
       TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
       SERVICE: ${{ github.event_name == 'workflow_dispatch' && inputs.service || github.event.client_payload.service }}
-      ARGOCD_VERIFY_SSL: true
+      USE_EXTERNAL_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.use_external_url || false }}
+      ARGOCD_VERIFY_SSL: false
+      ARGOCD_NAMESPACE: argocd
+      ARGOCD_SERVICE_NAME: argocd-dev-server
+      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com
+      CLUSTER_NAME: oorja-dev-aks
+      RESOURCE_GROUP_NAME: oorja-dev-rg
 
     steps: 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - uses: azure/setup-kubectl@v4
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
         with:
-           version: 'v1.32.0' # default is latest stable
+           version: 'v1.32.0'
         id: install
           
       - name: Run Common Terraform Routines
@@ -70,58 +80,137 @@ jobs:
       - name: Run Terraform Auth Routine
         uses: ./.github/actions/terraform-auth
         with:
-          aws__oidc-arn: ${{ vars.AWS_OIDC_ARN }}
-          aws__region: 'us-east-1'
-          aws__access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws__secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
       - name: Install ArgoCD CLI
         uses: ./.github/actions/setup-argocd-cli
 
-      - name: Set vault URL output
-        id: set-vault-url
+      - name: Update AKS Kubeconfig
         run: |
-          echo "vault_url=https://$( [ "$ENVIRONMENT" = "prod" ] && echo 'vault.hdcss.com' || echo "${ENVIRONMENT}.vault.hdcss.com" )" >> $GITHUB_OUTPUT
+          echo "🔍 Getting AKS cluster credentials..."
+          echo "Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "Resource Group: ${{ env.RESOURCE_GROUP_NAME }}"
+          
+          az aks get-credentials --name ${{ env.CLUSTER_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} --overwrite-existing
+          
+          # Verify connection
+          echo "📋 Cluster info:"
+          kubectl cluster-info
+          echo "✅ Kubeconfig updated successfully"
 
-      # - name: Get GitHub OIDC TokenMore actions
-      #   uses: actions/github-script@v6
-      #   id: oidc
-      #   with:
-      #     script: |
-      #       const token = await core.getIDToken("${{ env.ARGOCD_CLIENT_ID }}");
-      #       core.setOutput("token", token);
-
-      - name: Get Secrets
-        uses: hashicorp/vault-action@v3
-        with:
-          method: jwt
-          url: ${{ steps.set-vault-url.outputs.vault_url }}
-          namespace: default # HCP Vault and Vault Enterprise only
-          role: github-cicd-bot
-          jwtGithubAudience: 'cloudops-github-actions'
-          secrets: |
-            secret/data/argocd/tfapply argocd_server | ARGOCD_URL ;
-            secret/data/argocd/tfapply cluster_name | CLUSTER_NAME ;
-            secret/data/argocd/tfapply argocd_account | ARGOCD_ACCOUNT ;
-            secret/data/argocd/tfapply aws_region | AWS_REGION ;
-
-      - name: Update Inbound Rule
-        id: sg-in-rule
-        uses: ./.github/actions/dynamic-inbound-rule
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-          ingress-name: 'vault'
-
-      - name: Login to argocd server
-        id: argocd_auth
+      - name: Verify ArgoCD Deployment
         run: |
-          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-          argocd login --core
-          auth_token=$(argocd account generate-token --expires-in=15m --account ${{ env.ARGOCD_ACCOUNT }})
-          echo "::add-mask::$auth_token"
-          echo "ARGOCD_AUTH_TOKEN=$auth_token" >> $GITHUB_ENV
+          echo "🔍 Checking ArgoCD deployment..."
+          
+          # Check ArgoCD namespace
+          if ! kubectl get namespace ${{ env.ARGOCD_NAMESPACE }} >/dev/null 2>&1; then
+            echo "❌ ArgoCD namespace '${{ env.ARGOCD_NAMESPACE }}' not found"
+            echo "📂 Available namespaces:"
+            kubectl get namespaces
+            exit 1
+          fi
+          
+          # Check ArgoCD service
+          if ! kubectl get service ${{ env.ARGOCD_SERVICE_NAME }} -n ${{ env.ARGOCD_NAMESPACE }} >/dev/null 2>&1; then
+            echo "❌ ArgoCD service '${{ env.ARGOCD_SERVICE_NAME }}' not found in namespace '${{ env.ARGOCD_NAMESPACE }}'"
+            echo "📋 Available services:"
+            kubectl get services -n ${{ env.ARGOCD_NAMESPACE }}
+            exit 1
+          fi
+          
+          # Check ArgoCD pods
+          echo "📋 ArgoCD pods status:"
+          kubectl get pods -n ${{ env.ARGOCD_NAMESPACE }}
+          
+          # Check if ArgoCD server is ready
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=argocd-server -n ${{ env.ARGOCD_NAMESPACE }} --timeout=60s || echo "⚠️ ArgoCD server may not be fully ready"
+          
+          echo "✅ ArgoCD deployment verified"
+
+      - name: Get ArgoCD Admin Password
+        run: |
+          echo "🔍 Retrieving ArgoCD admin password..."
+          
+          # Get the admin password from the secret
+          ADMIN_PASSWORD=$(kubectl -n ${{ env.ARGOCD_NAMESPACE }} get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "")
+          
+          if [ -z "$ADMIN_PASSWORD" ]; then
+            echo "❌ Could not retrieve ArgoCD admin password"
+            echo "📋 Available secrets in ${{ env.ARGOCD_NAMESPACE }} namespace:"
+            kubectl get secrets -n ${{ env.ARGOCD_NAMESPACE }}
+            exit 1
+          fi
+          
+          echo "::add-mask::$ADMIN_PASSWORD"
+          echo "ARGOCD_ADMIN_PASSWORD=$ADMIN_PASSWORD" >> $GITHUB_ENV
+          echo "✅ Retrieved ArgoCD admin password"
+          echo "Password length: ${#ADMIN_PASSWORD} characters"
+
+      - name: Setup ArgoCD Connection
+        run: |
+          echo "🔍 Setting up ArgoCD connection..."
+          
+          if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
+            echo "🌐 Using external ArgoCD URL: ${{ env.ARGOCD_EXTERNAL_URL }}"
+            
+            # Test external connection first
+            echo "🔗 Testing external connectivity..."
+            curl -k -I ${{ env.ARGOCD_EXTERNAL_URL }} || echo "⚠️ External URL may not be accessible"
+            
+            # Login to external ArgoCD server
+            echo "🔑 Logging in to ArgoCD..."
+            argocd login genesis-azure.d01.hdcss.com --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
+            
+            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com
+            export ARGOCD_OPTS="--insecure"
+            
+          else
+            echo "🔗 Using port-forward to ArgoCD server..."
+            
+            # Start port-forward in background
+            kubectl port-forward svc/${{ env.ARGOCD_SERVICE_NAME }} -n ${{ env.ARGOCD_NAMESPACE }} 8080:80 &
+            PORT_FORWARD_PID=$!
+            echo "PORT_FORWARD_PID=$PORT_FORWARD_PID" >> $GITHUB_ENV
+            
+            # Wait for port-forward to be ready
+            echo "⏳ Waiting for port-forward to be ready..."
+            sleep 15
+            
+            # Test connection
+            echo "🔗 Testing port-forward connection..."
+            for i in {1..5}; do
+              if curl -s http://localhost:8080/ >/dev/null; then
+                echo "✅ Port-forward connection successful"
+                break
+              else
+                echo "⏳ Attempt $i: Waiting for port-forward..."
+                sleep 5
+              fi
+            done
+            
+            # Login using port-forward
+            echo "🔑 Logging in to ArgoCD via port-forward..."
+            argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
+            
+            export ARGOCD_SERVER=localhost:8080
+            export ARGOCD_OPTS="--insecure"
+          fi
+          
+          # Generate authentication token
+          echo "🎫 Generating authentication token..."
+          auth_token=$(argocd account generate-token --expires-in=15m --account admin 2>/dev/null || echo "")
+          
+          if [ -n "$auth_token" ]; then
+            echo "::add-mask::$auth_token"
+            echo "ARGOCD_AUTH_TOKEN=$auth_token" >> $GITHUB_ENV
+            echo "✅ Successfully authenticated to ArgoCD and generated token"
+          else
+            echo "⚠️ Could not generate auth token, but login was successful"
+            echo "ARGOCD_AUTH_TOKEN=" >> $GITHUB_ENV
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -130,9 +219,126 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          echo "📦 Installing Python dependencies..."
           pip install -r requirements.txt git+https://github.com/p1utoze/pyargocd.git
+          echo "✅ Dependencies installed successfully"
 
-      - name: Running ${{ env.SERVICE }} script
+      - name: Validate Service Input
         run: |
-          echo "Running ArgoCD-${{ env.SERVICE }} script"
-          python scripts/argocd-${{ env.SERVICE }}.py -f terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml
+          echo "🔍 Validating service input: ${{ env.SERVICE }}"
+          if [[ ! "${{ env.SERVICE }}" =~ ^(project|repository|application)$ ]]; then
+            echo "❌ Invalid 'service' input: ${{ env.SERVICE }}"
+            echo "Valid options: project, repository, application"
+            exit 1
+          fi
+          echo "✅ Service input validation passed"
+
+      - name: Setup Environment for Python Scripts
+        run: |
+          echo "🔧 Setting up environment for Python scripts..."
+          
+          # Set ArgoCD server URL for Python scripts
+          if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
+            echo "ARGOCD_URL=${{ env.ARGOCD_EXTERNAL_URL }}" >> $GITHUB_ENV
+            export ARGOCD_URL="${{ env.ARGOCD_EXTERNAL_URL }}"
+          else
+            echo "ARGOCD_URL=http://localhost:8080" >> $GITHUB_ENV
+            export ARGOCD_URL="http://localhost:8080"
+          fi
+          
+          # Export environment variables for Python scripts
+          export ARGOCD_AUTH_TOKEN="${{ env.ARGOCD_AUTH_TOKEN }}"
+          export ARGOCD_VERIFY_SSL=false
+          
+          echo "📋 ArgoCD Configuration for Python scripts:"
+          echo "  Server: $ARGOCD_URL"
+          echo "  Verify SSL: false"
+          echo "  Token: $([ -n "${{ env.ARGOCD_AUTH_TOKEN }}" ] && echo "Available" || echo "Not available")"
+
+      - name: Debug - Check Service Files
+        run: |
+          echo "🔍 Checking ArgoCD service files..."
+          echo "📁 Working directory: $(pwd)"
+          
+          echo "📂 terraform-vars structure:"
+          find terraform-vars -type f -name "*.yaml" | head -20
+          
+          echo ""
+          echo "📂 ArgoCD configs directory:"
+          ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+
+      - name: Run ArgoCD ${{ env.SERVICE }} Script
+        run: |
+          echo "🚀 Running ArgoCD ${{ env.SERVICE }} script..."
+          
+          # Check if the specific service YAML file exists
+          SERVICE_FILE="terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          if [ ! -f "$SERVICE_FILE" ]; then
+            echo "❌ Service file not found: $SERVICE_FILE"
+            echo "📂 Available YAML files:"
+            find terraform-vars/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+            echo ""
+            echo "📂 All files in argocd-configs:"
+            ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+            exit 1
+          fi
+          
+          echo "✅ Found service file: $SERVICE_FILE"
+          echo "📄 File preview:"
+          head -10 "$SERVICE_FILE"
+          echo ""
+          
+          # Set environment variables for Python script
+          if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
+            export ARGOCD_URL="${{ env.ARGOCD_EXTERNAL_URL }}"
+          else
+            export ARGOCD_URL="http://localhost:8080"
+          fi
+          export ARGOCD_AUTH_TOKEN="${{ env.ARGOCD_AUTH_TOKEN }}"
+          export ARGOCD_VERIFY_SSL=false
+          
+          echo "🎯 Executing ArgoCD script with environment:"
+          echo "  ARGOCD_URL: $ARGOCD_URL"
+          echo "  ARGOCD_VERIFY_SSL: $ARGOCD_VERIFY_SSL"
+          echo "  Script: scripts/argocd-${{ env.SERVICE }}.py"
+          
+          python scripts/argocd-${{ env.SERVICE }}.py -f "$SERVICE_FILE"
+          
+          echo "✅ ArgoCD ${{ env.SERVICE }} script completed successfully"
+
+      - name: Verify ArgoCD Resources
+        run: |
+          echo "🔍 Verifying ArgoCD resources..."
+          
+          case "${{ env.SERVICE }}" in
+            "project")
+              echo "📋 Listing ArgoCD projects:"
+              argocd proj list --insecure 2>/dev/null || echo "Could not list projects"
+              ;;
+            "repository")
+              echo "📋 Listing ArgoCD repositories:"
+              argocd repo list --insecure 2>/dev/null || echo "Could not list repositories"
+              ;;
+            "application")
+              echo "📋 Listing ArgoCD applications:"
+              argocd app list --insecure 2>/dev/null || echo "Could not list applications"
+              ;;
+          esac
+          
+          echo "✅ Verification completed"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up..."
+          
+          # Kill port-forward process if it was started
+          if [ -n "${{ env.PORT_FORWARD_PID }}" ]; then
+            echo "Stopping port-forward process..."
+            kill ${{ env.PORT_FORWARD_PID }} 2>/dev/null || true
+          fi
+          
+          # Kill any remaining kubectl port-forward processes
+          pkill -f "kubectl port-forward" 2>/dev/null || true
+          
+          echo "✅ Cleanup completed"
