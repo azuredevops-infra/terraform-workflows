@@ -7,9 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       target_branch:
-        description: 'Branch name from the Terraform core repository containing root module configurations (not from the workflows repository)'
+        description: 'Branch name from the Terraform variables repository containing ArgoCD configs'
         required: true
         type: string
+        default: '2.1'
       environment:
         description: 'Type of the deployment environment to use'
         required: true
@@ -28,7 +29,7 @@ on:
       use_external_url:
         description: 'Use external ArgoCD URL instead of port-forward'
         type: boolean
-        default: false  # Changed to false as default since external has path issues
+        default: false
         
 permissions:
       id-token: write
@@ -45,8 +46,7 @@ jobs:
       run:
         working-directory: .
     env:
-      TF_WORKING_DIR: 'terraform-configs' 
-      TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch || '2.1' }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.client_payload.environment }}
       SERVICE: ${{ github.event_name == 'workflow_dispatch' && inputs.service || github.event.client_payload.service }}
       USE_EXTERNAL_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.use_external_url || false }}
@@ -59,8 +59,56 @@ jobs:
       RESOURCE_GROUP_NAME: oorja-dev-rg
 
     steps: 
-      - name: Checkout repository
+      - name: Checkout Current Repository
         uses: actions/checkout@v4
+
+      - name: Checkout ArgoCD Configuration Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.TF_CONFIG_REPO }}
+          token: ${{ secrets.GH_PAT }}
+          path: argocd-configs
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 2
+
+      - name: Debug - Verify ArgoCD Config Files
+        run: |
+          echo "🔍 Verifying ArgoCD configuration files..."
+          echo "📁 Current working directory: $(pwd)"
+          echo "📁 Target branch: ${{ env.TARGET_BRANCH }}"
+          echo "📁 Service: ${{ env.SERVICE }}"
+          echo ""
+          
+          echo "📂 ArgoCD configs repository structure:"
+          find argocd-configs -type f -name "*.yaml" | head -20
+          echo ""
+          
+          echo "📂 ArgoCD configs manifests directory:"
+          if [ -d "argocd-configs/manifests" ]; then
+            ls -la argocd-configs/manifests/
+          else
+            echo "❌ manifests directory not found"
+          fi
+          echo ""
+          
+          echo "📂 ArgoCD configs directory:"
+          if [ -d "argocd-configs/manifests/argocd-configs" ]; then
+            ls -la argocd-configs/manifests/argocd-configs/
+          else
+            echo "❌ argocd-configs directory not found"
+          fi
+          echo ""
+          
+          echo "🎯 Looking for service file: argocd-configs/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          if [ -f "argocd-configs/manifests/argocd-configs/${{ env.SERVICE }}.yaml" ]; then
+            echo "✅ Service file found!"
+            echo "📄 File preview:"
+            head -10 "argocd-configs/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          else
+            echo "❌ Service file not found"
+            echo "📂 Available files in argocd-configs/manifests/argocd-configs/:"
+            ls -la argocd-configs/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+          fi
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -82,24 +130,18 @@ jobs:
           # Verify installation
           kubelogin --version
           echo "✅ kubelogin installed successfully"
-          
-      - name: Run Common Terraform Routines
-        id: tf-routines
-        uses: ./.github/actions/terraform-common
+
+      - name: Azure Authentication
+        uses: azure/login@v2
         with:
-          core_repo: ${{ vars.TF_CORE_REPO }}
-          config_repo: ${{ vars.TF_CONFIG_REPO }}
-          target_branch: ${{ env.TARGET_BRANCH }}
-          environment: ${{ env.ENVIRONMENT }}
-          pat-token: ${{ secrets.GH_PAT }}
-      
-      - name: Run Terraform Auth Routine
-        uses: ./.github/actions/terraform-auth
-        with:
-          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          creds: |
+            {
+              "clientId": "${{ secrets.ARM_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.ARM_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.ARM_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.ARM_TENANT_ID }}"
+            }
+          enable-AzPSSession: false
 
       - name: Install ArgoCD CLI
         uses: ./.github/actions/setup-argocd-cli
@@ -326,42 +368,22 @@ jobs:
           echo "  Verify SSL: false"
           echo "  Token: $([ -n "${{ env.ARGOCD_AUTH_TOKEN }}" ] && echo "Available" || echo "Not available")"
 
-      - name: Debug - Check Service Files
-        run: |
-          echo "🔍 Checking ArgoCD service files..."
-          echo "📁 Working directory: $(pwd)"
-          
-          echo "📂 terraform-vars structure:"
-          find terraform-vars -type f -name "*.yaml" | head -20
-          
-          echo ""
-          echo "📂 ArgoCD configs directory:"
-          ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
-          
-          echo ""
-          echo "📂 Individual service directories:"
-          for dir in projects repositories applications; do
-            if [ -d "terraform-vars/manifests/argocd-configs/$dir" ]; then
-              echo "  $dir/:"
-              ls -la terraform-vars/manifests/argocd-configs/$dir/
-            else
-              echo "  $dir/: Directory not found"
-            fi
-          done
-
       - name: Run ArgoCD ${{ env.SERVICE }} Script
         run: |
           echo "🚀 Running ArgoCD ${{ env.SERVICE }} script..."
           
           # Check if the specific service YAML file exists
-          SERVICE_FILE="terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          SERVICE_FILE="argocd-configs/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
           if [ ! -f "$SERVICE_FILE" ]; then
             echo "❌ Service file not found: $SERVICE_FILE"
             echo "📂 Available YAML files:"
-            find terraform-vars/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+            find argocd-configs/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
             echo ""
             echo "📂 All files in argocd-configs:"
-            ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+            ls -la argocd-configs/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+            echo ""
+            echo "📂 ArgoCD configs repository root:"
+            ls -la argocd-configs/ 2>/dev/null || echo "Repository not found"
             exit 1
           fi
           
