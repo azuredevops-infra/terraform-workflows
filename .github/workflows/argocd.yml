@@ -53,7 +53,7 @@ jobs:
       ARGOCD_VERIFY_SSL: false
       ARGOCD_NAMESPACE: argocd
       ARGOCD_SERVICE_NAME: argocd-dev-server
-      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com
+      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com/admin
       CLUSTER_NAME: oorja-dev-aks
       RESOURCE_GROUP_NAME: oorja-dev-rg
 
@@ -180,15 +180,16 @@ jobs:
           if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
             echo "🌐 Using external ArgoCD URL: ${{ env.ARGOCD_EXTERNAL_URL }}"
             
-            # Test external connection first
+            # Test external connection at the correct path
             echo "🔗 Testing external connectivity..."
             curl -k -I ${{ env.ARGOCD_EXTERNAL_URL }} --max-time 10 || echo "⚠️ External URL may not be accessible"
             
-            # Login to external ArgoCD server
+            # ArgoCD login expects hostname without path, but we need to specify the correct server
             echo "🔑 Logging in to ArgoCD..."
-            argocd login genesis-azure.d01.hdcss.com --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
+            # For ArgoCD behind a reverse proxy with custom path, we might need to use the full URL
+            argocd login genesis-azure.d01.hdcss.com/admin --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
             
-            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com
+            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com/admin
             export ARGOCD_OPTS="--insecure"
             
           else
