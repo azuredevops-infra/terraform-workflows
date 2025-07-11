@@ -53,7 +53,7 @@ jobs:
       ARGOCD_VERIFY_SSL: false
       ARGOCD_NAMESPACE: argocd
       ARGOCD_SERVICE_NAME: argocd-dev-server
-      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com/admin
+      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com/
       CLUSTER_NAME: oorja-dev-aks
       RESOURCE_GROUP_NAME: oorja-dev-rg
 
