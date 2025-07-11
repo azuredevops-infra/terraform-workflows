@@ -323,19 +323,19 @@ jobs:
           echo "🔍 Checking ArgoCD service files..."
           echo "📁 Working directory: $(pwd)"
           
-          echo "📂 terraform-variables structure:"
-          find terraform-variables -type f -name "*.yaml" | head -20
+          echo "📂 terraform-vars structure:"
+          find terraform-vars -type f -name "*.yaml" | head -20
           
           echo ""
           echo "📂 ArgoCD configs directory:"
-          ls -la terraform-variables/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+          ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
           
           echo ""
           echo "📂 Individual service directories:"
           for dir in projects repositories applications; do
-            if [ -d "terraform-variables/manifests/argocd-configs/$dir" ]; then
+            if [ -d "terraform-vars/manifests/argocd-configs/$dir" ]; then
               echo "  $dir/:"
-              ls -la terraform-variables/manifests/argocd-configs/$dir/
+              ls -la terraform-vars/manifests/argocd-configs/$dir/
             else
               echo "  $dir/: Directory not found"
             fi
@@ -345,14 +345,14 @@ jobs:
           echo "🚀 Running ArgoCD ${{ env.SERVICE }} script..."
           
           # Check if the specific service YAML file exists
-          SERVICE_FILE="terraform-variables/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          SERVICE_FILE="terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
           if [ ! -f "$SERVICE_FILE" ]; then
             echo "❌ Service file not found: $SERVICE_FILE"
             echo "📂 Available YAML files:"
-            find terraform-variables/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+            find terraform-vars/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
             echo ""
             echo "📂 All files in argocd-configs:"
-            ls -la terraform-variables/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+            ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
             exit 1
           fi
           
