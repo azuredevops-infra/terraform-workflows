@@ -124,8 +124,9 @@ runs:
           echo "✅ Found values files:"
           echo "$found_files"
           for file in $found_files; do
-            echo "📁 Moving $file to terraform-configs/..."
-            cp "$file" ./terraform-configs/
+            filename=$(basename "$file")
+            echo "📁 Moving $file to terraform-configs/$filename..."
+            cp "$file" "./terraform-configs/$filename"
           done
         else
           echo "ℹ️  No values.yaml/yml files found. Skipping move."
@@ -158,28 +159,6 @@ runs:
         else
           echo "ℹ️  No backend configuration files found. Using local backend."
         fi
-
-    - name: Find and move ArgoCD YAML files
-      shell: bash
-      run: |
-        echo "🔍 Searching for ArgoCD manifest YAML files..."
-        find ./terraform-vars/manifests/argocd-configs/ -type f -name "*.yaml" 2>/dev/null || echo "No ArgoCD YAML files found"
-    
-        found_files=$(find ./terraform-vars/manifests/argocd-configs/ -type f -name "*.yaml" 2>/dev/null || true)
-    
-        if [ -n "$found_files" ]; then
-          echo "✅ Found ArgoCD files:"
-          echo "$found_files"
-          mkdir -p ./terraform-configs/argocd-configs/
-          for file in $found_files; do
-            filename=$(basename "$file")
-            echo "📁 Moving $file -> terraform-configs/argocd-configs/$filename"
-            cp "$file" ./terraform-configs/argocd-configs/"$filename"
-          done
-        else
-          echo "ℹ️ No ArgoCD YAML files found to copy."
-        fi
-
         
     - name: Find and move Terraform template files
       shell: bash
@@ -202,6 +181,74 @@ runs:
           echo "ℹ️  No .tftpl template files found. Skipping move."
         fi
 
+    - name: Copy ArgoCD Manifests Directory
+      shell: bash
+      run: |
+        echo "🔍 Searching for ArgoCD manifests directory..."
+        
+        if [ -d "./terraform-vars/manifests" ]; then
+          echo "✅ Found manifests directory: ./terraform-vars/manifests"
+          echo "📁 Copying entire manifests directory to terraform-configs..."
+          
+          # Copy the entire manifests directory
+          cp -r ./terraform-vars/manifests ./terraform-configs/
+          
+          echo "📂 Manifests directory structure after copy:"
+          find ./terraform-configs/manifests -type f 2>/dev/null | head -20 || echo "No files found in manifests"
+          
+          echo "📂 ArgoCD configs specifically:"
+          if [ -d "./terraform-configs/manifests/argocd-configs" ]; then
+            ls -la ./terraform-configs/manifests/argocd-configs/
+            echo ""
+            echo "📋 ArgoCD config files:"
+            find ./terraform-configs/manifests/argocd-configs -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+          else
+            echo "❌ ArgoCD configs directory not found after copy"
+          fi
+          
+        else
+          echo "ℹ️  No manifests directory found. Skipping ArgoCD manifests copy."
+          echo "📂 Available directories in terraform-vars:"
+          ls -la ./terraform-vars/ | grep ^d || echo "No directories found"
+        fi
+
+    - name: Copy Scripts Directory
+      shell: bash
+      run: |
+        echo "🔍 Searching for scripts directory..."
+        
+        if [ -d "./terraform-vars/scripts" ]; then
+          echo "✅ Found scripts directory: ./terraform-vars/scripts"
+          echo "📁 Copying entire scripts directory to terraform-configs..."
+          
+          # Copy the entire scripts directory
+          cp -r ./terraform-vars/scripts ./terraform-configs/
+          
+          echo "📂 Scripts directory structure after copy:"
+          find ./terraform-configs/scripts -type f 2>/dev/null | head -10 || echo "No files found in scripts"
+          
+        else
+          echo "ℹ️  No scripts directory found. Skipping scripts copy."
+        fi
+
+    - name: Copy Requirements File
+      shell: bash
+      run: |
+        echo "🔍 Searching for requirements.txt..."
+        
+        if [ -f "./terraform-vars/requirements.txt" ]; then
+          echo "✅ Found requirements.txt: ./terraform-vars/requirements.txt"
+          echo "📁 Copying requirements.txt to terraform-configs..."
+          
+          cp ./terraform-vars/requirements.txt ./terraform-configs/
+          
+          echo "📄 Requirements.txt content:"
+          head -10 ./terraform-configs/requirements.txt || true
+          
+        else
+          echo "ℹ️  No requirements.txt found. Skipping requirements copy."
+        fi
+
     - name: Debug - List terraform-configs directory
       shell: bash
       run: |
@@ -213,6 +260,22 @@ runs:
         echo ""
         echo "🔍 Template files:"
         ls -la ./terraform-configs/*.tftpl 2>/dev/null || echo "No .tftpl files found"
+        echo ""
+        echo "🔍 ArgoCD manifests:"
+        if [ -d "./terraform-configs/manifests/argocd-configs" ]; then
+          echo "✅ ArgoCD configs found:"
+          ls -la ./terraform-configs/manifests/argocd-configs/
+        else
+          echo "❌ ArgoCD configs not found"
+        fi
+        echo ""
+        echo "🔍 Scripts directory:"
+        if [ -d "./terraform-configs/scripts" ]; then
+          echo "✅ Scripts found:"
+          ls -la ./terraform-configs/scripts/
+        else
+          echo "❌ Scripts not found"
+        fi
         echo ""
         echo "🔍 Key terraform files:"
         find ./terraform-configs -maxdepth 1 -type f \( -name "*.tf" -o -name "*.tfvars*" -o -name "*.tftpl" \) | head -20
