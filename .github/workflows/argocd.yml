@@ -103,22 +103,22 @@ jobs:
       - name: Install ArgoCD CLI
         uses: ./.github/actions/setup-argocd-cli
 
-      - name: Update AKS Kubeconfig with AAD Authentication
+      - name: Update AKS Kubeconfig with Admin Credentials
         run: |
-          echo "🔍 Getting AKS cluster credentials with Azure AD authentication..."
+          echo "🔍 Getting AKS cluster credentials with admin access..."
           echo "Cluster: ${{ env.CLUSTER_NAME }}"
           echo "Resource Group: ${{ env.RESOURCE_GROUP_NAME }}"
           
-          # Get AKS credentials
-          az aks get-credentials --name ${{ env.CLUSTER_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} --overwrite-existing
-          
-          # Convert to use Azure CLI for authentication (better for CI/CD)
-          echo "🔧 Converting kubeconfig to use Azure CLI authentication..."
-          kubelogin convert-kubeconfig -l azurecli
+          # Get AKS admin credentials (bypasses Azure AD RBAC)
+          az aks get-credentials --name ${{ env.CLUSTER_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} --admin --overwrite-existing
           
           # Test connection
           echo "🔗 Testing cluster connection..."
           kubectl cluster-info --request-timeout=30s
+          
+          # Verify we can access namespaces
+          echo "📂 Available namespaces:"
+          kubectl get namespaces
           
           echo "✅ Kubeconfig updated and verified successfully"
 
