@@ -53,7 +53,8 @@ jobs:
       ARGOCD_VERIFY_SSL: false
       ARGOCD_NAMESPACE: argocd
       ARGOCD_SERVICE_NAME: argocd-dev-server
-      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com/
+      ARGOCD_EXTERNAL_HOST: genesis-azure.d01.hdcss.com
+      ARGOCD_EXTERNAL_URL: https://genesis-azure.d01.hdcss.com
       CLUSTER_NAME: oorja-dev-aks
       RESOURCE_GROUP_NAME: oorja-dev-rg
 
@@ -180,17 +181,17 @@ jobs:
           if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
             echo "🌐 Using external ArgoCD URL: ${{ env.ARGOCD_EXTERNAL_URL }}"
             
-            # Test external connection at the correct path
+            # Test external connection
             echo "🔗 Testing external connectivity..."
             curl -k -I ${{ env.ARGOCD_EXTERNAL_URL }} --max-time 10 || echo "⚠️ External URL may not be accessible"
             
-            # ArgoCD login expects hostname without path, but we need to specify the correct server
+            # ArgoCD login - use hostname only, not the full URL with path
             echo "🔑 Logging in to ArgoCD..."
-            # For ArgoCD behind a reverse proxy with custom path, we might need to use the full URL
-            argocd login genesis-azure.d01.hdcss.com/admin --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
+            argocd login ${{ env.ARGOCD_EXTERNAL_HOST }} --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
             
-            export ARGOCD_SERVER=genesis-azure.d01.hdcss.com/
-            export ARGOCD_OPTS="--insecure"
+            # Set environment for further ArgoCD commands
+            echo "ARGOCD_SERVER=${{ env.ARGOCD_EXTERNAL_HOST }}" >> $GITHUB_ENV
+            echo "ARGOCD_OPTS=--insecure" >> $GITHUB_ENV
             
           else
             echo "🔗 Using port-forward to ArgoCD server..."
@@ -220,13 +221,13 @@ jobs:
             echo "🔑 Logging in to ArgoCD via port-forward..."
             argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure
             
-            export ARGOCD_SERVER=localhost:8080
-            export ARGOCD_OPTS="--insecure"
+            echo "ARGOCD_SERVER=localhost:8080" >> $GITHUB_ENV
+            echo "ARGOCD_OPTS=--insecure" >> $GITHUB_ENV
           fi
           
           # Generate authentication token
           echo "🎫 Generating authentication token..."
-          auth_token=$(argocd account generate-token --expires-in=15m --account admin 2>/dev/null || echo "")
+          auth_token=$(argocd account generate-token --expires-in=15m --account admin --insecure 2>/dev/null || echo "")
           
           if [ -n "$auth_token" ]; then
             echo "::add-mask::$auth_token"
@@ -291,6 +292,17 @@ jobs:
           echo ""
           echo "📂 ArgoCD configs directory:"
           ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+          
+          echo ""
+          echo "📂 Individual service directories:"
+          for dir in projects repositories applications; do
+            if [ -d "terraform-vars/manifests/argocd-configs/$dir" ]; then
+              echo "  $dir/:"
+              ls -la terraform-vars/manifests/argocd-configs/$dir/
+            else
+              echo "  $dir/: Directory not found"
+            fi
+          done
 
       - name: Run ArgoCD ${{ env.SERVICE }} Script
         run: |
@@ -338,15 +350,15 @@ jobs:
           case "${{ env.SERVICE }}" in
             "project")
               echo "📋 Listing ArgoCD projects:"
-              argocd proj list --insecure 2>/dev/null || echo "Could not list projects"
+              argocd proj list ${{ env.ARGOCD_OPTS }} 2>/dev/null || echo "Could not list projects"
               ;;
             "repository")
               echo "📋 Listing ArgoCD repositories:"
-              argocd repo list --insecure 2>/dev/null || echo "Could not list repositories"
+              argocd repo list ${{ env.ARGOCD_OPTS }} 2>/dev/null || echo "Could not list repositories"
               ;;
             "application")
               echo "📋 Listing ArgoCD applications:"
-              argocd app list --insecure 2>/dev/null || echo "Could not list applications"
+              argocd app list ${{ env.ARGOCD_OPTS }} 2>/dev/null || echo "Could not list applications"
               ;;
           esac
           
