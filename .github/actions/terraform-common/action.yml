@@ -158,6 +158,28 @@ runs:
         else
           echo "ℹ️  No backend configuration files found. Using local backend."
         fi
+
+    - name: Find and move ArgoCD YAML files
+      shell: bash
+      run: |
+        echo "🔍 Searching for ArgoCD manifest YAML files..."
+        find ./terraform-vars/manifests/argocd-configs/ -type f -name "*.yaml" 2>/dev/null || echo "No ArgoCD YAML files found"
+    
+        found_files=$(find ./terraform-vars/manifests/argocd-configs/ -type f -name "*.yaml" 2>/dev/null || true)
+    
+        if [ -n "$found_files" ]; then
+          echo "✅ Found ArgoCD files:"
+          echo "$found_files"
+          mkdir -p ./terraform-configs/argocd-configs/
+          for file in $found_files; do
+            filename=$(basename "$file")
+            echo "📁 Moving $file -> terraform-configs/argocd-configs/$filename"
+            cp "$file" ./terraform-configs/argocd-configs/"$filename"
+          done
+        else
+          echo "ℹ️ No ArgoCD YAML files found to copy."
+        fi
+
         
     - name: Find and move Terraform template files
       shell: bash
