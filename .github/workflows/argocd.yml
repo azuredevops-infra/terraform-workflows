@@ -90,6 +90,7 @@ jobs:
           core_repo: ${{ vars.TF_CORE_REPO }}
           config_repo: ${{ vars.TF_CONFIG_REPO }}
           target_branch: ${{ env.TARGET_BRANCH }}
+          variables_branch: "2.1"
           environment: ${{ env.ENVIRONMENT }}
           pat-token: ${{ secrets.GH_PAT }}
       
