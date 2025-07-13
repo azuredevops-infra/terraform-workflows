@@ -376,7 +376,12 @@ jobs:
           echo "  ARGOCD_VERIFY_SSL: $ARGOCD_VERIFY_SSL"
           echo "  Script: scripts/argocd-${{ env.SERVICE }}.py"
           
-          python scripts/argocd-${{ env.SERVICE }}.py -f "$SERVICE_FILE"
+          python scripts/argocd-${{ env.SERVICE }}.py \
+            -f "$SERVICE_FILE" \
+            --host-url "http://localhost:8080" \
+            --token "${{ env.ARGOCD_AUTH_TOKEN }}" \
+            --verify-ssl false
+              
           
           echo "✅ ArgoCD ${{ env.SERVICE }} script completed successfully"
       - name: Verify ArgoCD Resources
