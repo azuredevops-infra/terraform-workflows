@@ -28,7 +28,7 @@ on:
       use_external_url:
         description: 'Use external ArgoCD URL instead of port-forward'
         type: boolean
-        default: false
+        default: false  # Changed to false as default since external has path issues
         
 permissions:
       id-token: write
@@ -43,7 +43,7 @@ jobs:
       github.event_name == 'repository_dispatch'
     defaults:
       run:
-        working-directory: ./terraform-configs
+        working-directory: .
     env:
       TF_WORKING_DIR: 'terraform-configs' 
       TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || github.event.client_payload.target_branch }}
@@ -82,7 +82,6 @@ jobs:
           # Verify installation
           kubelogin --version
           echo "✅ kubelogin installed successfully"
-        working-directory: /tmp
           
       - name: Run Common Terraform Routines
         id: tf-routines
@@ -123,7 +122,6 @@ jobs:
           kubectl get namespaces
           
           echo "✅ Kubeconfig updated and verified successfully"
-
       - name: Verify ArgoCD Deployment
         run: |
           echo "🔍 Checking ArgoCD deployment..."
@@ -160,7 +158,6 @@ jobs:
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=argocd-server -n ${{ env.ARGOCD_NAMESPACE }} --timeout=60s || echo "⚠️ ArgoCD server may not be fully ready"
           
           echo "✅ ArgoCD deployment verified"
-
       - name: Get ArgoCD Admin Password
         run: |
           echo "🔍 Retrieving ArgoCD admin password..."
@@ -182,7 +179,6 @@ jobs:
           echo "ARGOCD_ADMIN_PASSWORD=$ADMIN_PASSWORD" >> $GITHUB_ENV
           echo "✅ Retrieved ArgoCD admin password"
           echo "Password length: ${#ADMIN_PASSWORD} characters"
-
       - name: Test External ArgoCD Access
         if: env.USE_EXTERNAL_URL == 'true'
         run: |
@@ -205,7 +201,6 @@ jobs:
           curl -k -I "${{ env.ARGOCD_EXTERNAL_URL }}/" --max-time 10
           
           echo "🔍 Checking if ArgoCD API is accessible via external URL..."
-
       - name: Setup ArgoCD Connection
         run: |
           echo "🔍 Setting up ArgoCD connection..."
@@ -261,7 +256,7 @@ jobs:
             
             # Login using port-forward
             echo "🔑 Logging in to ArgoCD via port-forward..."
-            if argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure; then
+            if echo "y" | argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure --grpc-web; then
               echo "✅ Port-forward login successful"
               echo "ARGOCD_SERVER=localhost:8080" >> $GITHUB_ENV
               echo "ARGOCD_OPTS=--insecure" >> $GITHUB_ENV
@@ -283,7 +278,6 @@ jobs:
             echo "⚠️ Could not generate auth token, but login was successful"
             echo "ARGOCD_AUTH_TOKEN=" >> $GITHUB_ENV
           fi
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -292,18 +286,8 @@ jobs:
       - name: Install Dependencies
         run: |
           echo "📦 Installing Python dependencies..."
-          
-          # Check if requirements.txt exists
-          if [ -f "requirements.txt" ]; then
-            echo "✅ Found requirements.txt"
-            pip install -r requirements.txt git+https://github.com/p1utoze/pyargocd.git
-          else
-            echo "❌ requirements.txt not found, installing basic dependencies..."
-            pip install PyYAML==6.0.2 requests==2.31.0 git+https://github.com/p1utoze/pyargocd.git
-          fi
-          
+          pip install -r requirements.txt git+https://github.com/p1utoze/pyargocd.git
           echo "✅ Dependencies installed successfully"
-
       - name: Validate Service Input
         run: |
           echo "🔍 Validating service input: ${{ env.SERVICE }}"
@@ -313,7 +297,6 @@ jobs:
             exit 1
           fi
           echo "✅ Service input validation passed"
-
       - name: Setup Environment for Python Scripts
         run: |
           echo "🔧 Setting up environment for Python scripts..."
@@ -335,59 +318,41 @@ jobs:
           echo "  Server: $ARGOCD_URL"
           echo "  Verify SSL: false"
           echo "  Token: $([ -n "${{ env.ARGOCD_AUTH_TOKEN }}" ] && echo "Available" || echo "Not available")"
-
       - name: Debug - Check Service Files
         run: |
           echo "🔍 Checking ArgoCD service files..."
-          echo "📁 Current working directory: $(pwd)"
+          echo "📁 Working directory: $(pwd)"
           
-          echo "📂 Current directory structure:"
-          ls -la
+          echo "📂 terraform-vars structure:"
+          find terraform-vars -type f -name "*.yaml" | head -20
           
           echo ""
-          echo "📂 Manifests directory:"
-          if [ -d "manifests" ]; then
-            echo "✅ Manifests directory found"
-            ls -la manifests/
-            
-            echo ""
-            echo "📂 ArgoCD configs directory:"
-            if [ -d "manifests/argocd-configs" ]; then
-              echo "✅ ArgoCD configs directory found"
-              ls -la manifests/argocd-configs/
-              
-              echo ""
-              echo "📋 Available YAML files:"
-              find manifests/argocd-configs -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+          echo "📂 ArgoCD configs directory:"
+          ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+          
+          echo ""
+          echo "📂 Individual service directories:"
+          for dir in projects repositories applications; do
+            if [ -d "terraform-vars/manifests/argocd-configs/$dir" ]; then
+              echo "  $dir/:"
+              ls -la terraform-vars/manifests/argocd-configs/$dir/
             else
-              echo "❌ ArgoCD configs directory not found"
+              echo "  $dir/: Directory not found"
             fi
-          else
-            echo "❌ Manifests directory not found"
-          fi
-          
-          echo ""
-          echo "📂 Scripts directory:"
-          if [ -d "scripts" ]; then
-            echo "✅ Scripts directory found"
-            ls -la scripts/
-          else
-            echo "❌ Scripts directory not found"
-          fi
-
+          done
       - name: Run ArgoCD ${{ env.SERVICE }} Script
         run: |
           echo "🚀 Running ArgoCD ${{ env.SERVICE }} script..."
           
           # Check if the specific service YAML file exists
-          SERVICE_FILE="manifests/argocd-configs/${{ env.SERVICE }}.yaml"
+          SERVICE_FILE="terraform-vars/manifests/argocd-configs/${{ env.SERVICE }}.yaml"
           if [ ! -f "$SERVICE_FILE" ]; then
             echo "❌ Service file not found: $SERVICE_FILE"
             echo "📂 Available YAML files:"
-            find manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
+            find terraform-vars/manifests/argocd-configs/ -name "*.yaml" -type f 2>/dev/null || echo "No YAML files found"
             echo ""
             echo "📂 All files in argocd-configs:"
-            ls -la manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
+            ls -la terraform-vars/manifests/argocd-configs/ 2>/dev/null || echo "Directory not found"
             exit 1
           fi
           
@@ -395,17 +360,6 @@ jobs:
           echo "📄 File preview:"
           head -10 "$SERVICE_FILE"
           echo ""
-          
-          # Check if Python script exists
-          SCRIPT_FILE="scripts/argocd-${{ env.SERVICE }}.py"
-          if [ ! -f "$SCRIPT_FILE" ]; then
-            echo "❌ Python script not found: $SCRIPT_FILE"
-            echo "📂 Available Python scripts:"
-            find scripts/ -name "*.py" -type f 2>/dev/null || echo "No Python scripts found"
-            exit 1
-          fi
-          
-          echo "✅ Found Python script: $SCRIPT_FILE"
           
           # Set environment variables for Python script
           if [ "${{ env.ARGOCD_SERVER }}" = "localhost:8080" ]; then
@@ -419,13 +373,11 @@ jobs:
           echo "🎯 Executing ArgoCD script with environment:"
           echo "  ARGOCD_URL: $ARGOCD_URL"
           echo "  ARGOCD_VERIFY_SSL: $ARGOCD_VERIFY_SSL"
-          echo "  Script: $SCRIPT_FILE"
-          echo "  Service file: $SERVICE_FILE"
+          echo "  Script: scripts/argocd-${{ env.SERVICE }}.py"
           
-          python "$SCRIPT_FILE" -f "$SERVICE_FILE"
+          python scripts/argocd-${{ env.SERVICE }}.py -f "$SERVICE_FILE"
           
           echo "✅ ArgoCD ${{ env.SERVICE }} script completed successfully"
-
       - name: Verify ArgoCD Resources
         run: |
           echo "🔍 Verifying ArgoCD resources..."
@@ -446,7 +398,6 @@ jobs:
           esac
           
           echo "✅ Verification completed"
-
       - name: Cleanup
         if: always()
         run: |
