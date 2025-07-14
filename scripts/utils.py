@@ -131,36 +131,6 @@ def prepare_payload_data(meta_yaml_file, service_type):
     
     return service_yamls
 
-def get_argocd_client():
-    """
-    Get ArgoCD client using environment variables
-    Use admin password as auth token for authentication
-    """
-    import argocd
-    import os
-    
-    argocd_url = os.environ.get('ARGOCD_URL')
-    admin_password = os.environ.get('ARGOCD_ADMIN_PASSWORD')
-    verify_ssl = os.environ.get('ARGOCD_VERIFY_SSL', 'false').lower() == 'true'
-    
-    print(f"🔗 Connecting to ArgoCD at: {argocd_url}")
-    print(f"🔒 SSL Verification: {verify_ssl}")
-    
-    # Set environment variables for ArgoCD client
-    os.environ['ARGOCD_URL'] = argocd_url
-    os.environ['ARGOCD_VERIFY_SSL'] = str(verify_ssl).lower()
-    
-    # Try using admin password as auth token
-    os.environ['ARGOCD_AUTH_TOKEN'] = admin_password
-    
-    try:
-        client = argocd.ArgoCDClient()
-        print("✅ ArgoCD client created successfully using password as token")
-        return client
-    except Exception as e:
-        print(f"❌ ArgoCD client creation failed: {str(e)}")
-        raise e
-
 def load_yaml(file_path, as_string: bool = False):
     """Load YAML file with optional template substitution"""
     if not as_string:
