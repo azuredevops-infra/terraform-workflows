@@ -51,7 +51,7 @@ if __name__ == "__main__":
             print(f"[red] Failed to load config file:[/red] {args.config_file} \n[yellow] Reason: No repositories enabled![/yellow]")
             sys.exit(0)
         
-        client = argocd_utils.get_argocd_client()
+        client = argocd.ArgoCDClient()
         res = None
         for repo, body in payloads.items():
             _method = body.pop('method')
