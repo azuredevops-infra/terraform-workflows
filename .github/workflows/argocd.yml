@@ -209,31 +209,20 @@ jobs:
           
           if [ "${{ env.USE_EXTERNAL_URL }}" = "true" ]; then
             echo "🌐 Using external ArgoCD URL: ${{ env.ARGOCD_EXTERNAL_URL }}"
-            echo "⚠️ Note: External access may have path routing issues with Application Gateway"
             
-            # Try different login approaches for external access
-            echo "🔑 Attempting ArgoCD login via external URL..."
-            
-            # First try: Direct hostname
-            if argocd login ${{ env.ARGOCD_EXTERNAL_HOST }} --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure 2>/dev/null; then
-              echo "✅ Login successful with direct hostname"
-              echo "ARGOCD_SERVER=${{ env.ARGOCD_EXTERNAL_HOST }}" >> $GITHUB_ENV
-            
-            # Second try: With gRPC web option
-            elif argocd login ${{ env.ARGOCD_EXTERNAL_HOST }} --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure --grpc-web 2>/dev/null; then
-              echo "✅ Login successful with gRPC web"
-              echo "ARGOCD_SERVER=${{ env.ARGOCD_EXTERNAL_HOST }}" >> $GITHUB_ENV
-            
+            # Try external login with different approaches
+            if argocd login ${{ env.ARGOCD_EXTERNAL_HOST }} --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure --grpc-web; then
+              echo "✅ External login successful"
+              ARGOCD_SERVER="${{ env.ARGOCD_EXTERNAL_HOST }}"
+              ARGOCD_URL="${{ env.ARGOCD_EXTERNAL_URL }}"
             else
               echo "❌ External login failed, falling back to port-forward"
               echo "USE_EXTERNAL_URL=false" >> $GITHUB_ENV
             fi
-            
-            echo "ARGOCD_OPTS=--insecure" >> $GITHUB_ENV
           fi
           
-          # Use port-forward if external failed or was not requested
-          if [ "${{ env.USE_EXTERNAL_URL }}" != "true" ] || [ "$(printenv USE_EXTERNAL_URL)" = "false" ]; then
+          # Use port-forward if external failed or not requested
+          if [ "${{ env.USE_EXTERNAL_URL }}" != "true" ]; then
             echo "🔗 Using port-forward to ArgoCD server..."
             
             # Start port-forward in background
@@ -243,43 +232,77 @@ jobs:
             
             # Wait for port-forward to be ready
             echo "⏳ Waiting for port-forward to be ready..."
-            sleep 15
-            
-            # Test connection
-            echo "🔗 Testing port-forward connection..."
-            for i in {1..5}; do
-              if curl -s http://localhost:8080/ >/dev/null; then
+            for i in {1..10}; do
+              if curl -s http://localhost:8080/ >/dev/null 2>&1; then
                 echo "✅ Port-forward connection successful"
                 break
               else
                 echo "⏳ Attempt $i: Waiting for port-forward..."
-                sleep 5
+                sleep 3
+              fi
+              if [ $i -eq 10 ]; then
+                echo "❌ Port-forward failed to become ready"
+                exit 1
               fi
             done
             
             # Login using port-forward
             echo "🔑 Logging in to ArgoCD via port-forward..."
-            if echo "y" | argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure --grpc-web; then
+            if argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure; then
               echo "✅ Port-forward login successful"
-              echo "ARGOCD_SERVER=localhost:8080" >> $GITHUB_ENV
-              echo "ARGOCD_OPTS=--insecure" >> $GITHUB_ENV
+              ARGOCD_SERVER="localhost:8080"
+              ARGOCD_URL="http://localhost:8080"
             else
               echo "❌ Port-forward login failed"
               exit 1
             fi
           fi
           
-          # Generate authentication token
-          echo "🎫 Generating authentication token..."
-          auth_token=$(argocd account generate-token --expires-in=15m --account admin --insecure 2>/dev/null || echo "")
+          # Store connection info
+          echo "ARGOCD_SERVER=$ARGOCD_SERVER" >> $GITHUB_ENV
+          echo "ARGOCD_URL=$ARGOCD_URL" >> $GITHUB_ENV
           
-          if [ -n "$auth_token" ]; then
+          # Generate authentication token with multiple attempts
+          echo "🎫 Generating authentication token..."
+          
+          # Method 1: Standard token generation
+          auth_token=$(argocd account generate-token --account admin --insecure 2>/dev/null || echo "")
+          
+          if [ -z "$auth_token" ]; then
+            echo "⚠️ Standard token generation failed, trying alternative methods..."
+            
+            # Method 2: Try with expiration
+            auth_token=$(argocd account generate-token --account admin --expires-in 1h --insecure 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$auth_token" ]; then
+            echo "⚠️ Token generation with expiration failed, trying session extraction..."
+            
+            # Method 3: Extract token from CLI context
+            auth_token=$(argocd context --insecure 2>/dev/null | grep 'auth-token' | awk '{print $2}' || echo "")
+          fi
+          
+          if [ -z "$auth_token" ]; then
+            echo "⚠️ Context extraction failed, checking config file..."
+            
+            # Method 4: Extract from config file
+            if [ -f ~/.argocd/config ]; then
+              auth_token=$(cat ~/.argocd/config | grep 'auth-token' | cut -d'"' -f4 || echo "")
+            fi
+          fi
+          
+          if [ -n "$auth_token" ] && [ "$auth_token" != "null" ]; then
             echo "::add-mask::$auth_token"
             echo "ARGOCD_AUTH_TOKEN=$auth_token" >> $GITHUB_ENV
-            echo "✅ Successfully authenticated to ArgoCD and generated token"
+            echo "✅ Successfully generated/extracted authentication token"
+            echo "Token length: ${#auth_token} characters"
           else
-            echo "⚠️ Could not generate auth token, but login was successful"
-            echo "ARGOCD_AUTH_TOKEN=" >> $GITHUB_ENV
+            echo "❌ All token generation methods failed"
+            echo "📋 Available ArgoCD context info:"
+            argocd context --insecure || echo "No context available"
+            echo "📋 Config file contents:"
+            cat ~/.argocd/config 2>/dev/null || echo "No config file found"
+            exit 1
           fi
       
       - name: Set up Python
