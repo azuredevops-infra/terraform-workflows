@@ -131,6 +131,44 @@ def prepare_payload_data(meta_yaml_file, service_type):
     
     return service_yamls
 
+def get_argocd_client():
+    """
+    Get ArgoCD client using password authentication directly
+    Bypasses token generation issues
+    """
+    import argocd
+    
+    argocd_url = os.environ.get('ARGOCD_URL')
+    admin_password = os.environ.get('ARGOCD_ADMIN_PASSWORD')
+    
+    print(f"🔗 Connecting to ArgoCD at: {argocd_url}")
+    
+    try:
+        # Direct password authentication
+        client = argocd.ArgoCDClient(
+            server=argocd_url,
+            username='admin',
+            password=admin_password,
+            verify_ssl=False
+        )
+        print("✅ ArgoCD authentication successful")
+        return client
+    except Exception as e:
+        # Try with /admin path if root fails
+        try:
+            admin_url = f"{argocd_url}/admin" if not argocd_url.endswith('/admin') else argocd_url
+            client = argocd.ArgoCDClient(
+                server=admin_url,
+                username='admin', 
+                password=admin_password,
+                verify_ssl=False
+            )
+            print(f"✅ ArgoCD authentication successful (admin path): {admin_url}")
+            return client
+        except Exception as e2:
+            print(f"❌ Both attempts failed: {e}, {e2}")
+            raise e
+
 def load_yaml(file_path, as_string: bool = False):
     """Load YAML file with optional template substitution"""
     if not as_string:
