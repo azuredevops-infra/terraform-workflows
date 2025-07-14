@@ -307,16 +307,21 @@ jobs:
           
           # Set URL based on connection method
           if [ "${{ env.ARGOCD_SERVER }}" = "localhost:8080" ]; then
+            export ARGOCD_URL="http://localhost:8080"
             echo "ARGOCD_URL=http://localhost:8080" >> $GITHUB_ENV
           else
+            export ARGOCD_URL="${{ env.ARGOCD_EXTERNAL_URL }}"
             echo "ARGOCD_URL=${{ env.ARGOCD_EXTERNAL_URL }}" >> $GITHUB_ENV
           fi
           
-          # Use password authentication (no token needed)
-          echo "ARGOCD_ADMIN_PASSWORD=${{ env.ARGOCD_ADMIN_PASSWORD }}" >> $GITHUB_ENV
+          # 🔑 KEY FIX: Use admin password as auth token
+          export ARGOCD_AUTH_TOKEN="${{ env.ARGOCD_ADMIN_PASSWORD }}"
+          echo "ARGOCD_AUTH_TOKEN=${{ env.ARGOCD_ADMIN_PASSWORD }}" >> $GITHUB_ENV
+          
+          export ARGOCD_VERIFY_SSL=false
           echo "ARGOCD_VERIFY_SSL=false" >> $GITHUB_ENV
           
-          echo "📋 Using password-based authentication"
+          echo "📋 Using admin password as auth token"
       - name: Debug - Check Service Files
         run: |
           echo "🔍 Checking ArgoCD service files..."
