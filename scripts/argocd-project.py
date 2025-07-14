@@ -42,7 +42,7 @@ if __name__ == "__main__":
             print(f"[red] Failed to load config file:[/red] {args.config_file} \n[yellow] Reason: No projects enabled![/yellow]")
             sys.exit(0)
             
-        client = argocd.ArgoCDClient()
+        client = argocd_utils.get_argocd_client()
         res = None
         for proj, body in payloads.items():
             _method = body.pop('method')
