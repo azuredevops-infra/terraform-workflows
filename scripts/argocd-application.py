@@ -51,7 +51,7 @@ if __name__ == "__main__":
             print(f"Failed to load config file: {args.config_file}")
             sys.exit(1)
             
-        client = argocd.ArgoCDClient()
+        client = argocd_utils.get_argocd_client()
         res = None
         for app, body in payloads.items():
             _method = body.pop('method')
