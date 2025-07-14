@@ -305,23 +305,18 @@ jobs:
         run: |
           echo "🔧 Setting up environment for Python scripts..."
           
-          # Set ArgoCD server URL for Python scripts based on what worked for CLI
+          # Set URL based on connection method
           if [ "${{ env.ARGOCD_SERVER }}" = "localhost:8080" ]; then
             echo "ARGOCD_URL=http://localhost:8080" >> $GITHUB_ENV
-            export ARGOCD_URL="http://localhost:8080"
           else
             echo "ARGOCD_URL=${{ env.ARGOCD_EXTERNAL_URL }}" >> $GITHUB_ENV
-            export ARGOCD_URL="${{ env.ARGOCD_EXTERNAL_URL }}"
           fi
           
-          # Export environment variables for Python scripts
-          export ARGOCD_AUTH_TOKEN="${{ env.ARGOCD_AUTH_TOKEN }}"
-          export ARGOCD_VERIFY_SSL=false
+          # Use password authentication (no token needed)
+          echo "ARGOCD_ADMIN_PASSWORD=${{ env.ARGOCD_ADMIN_PASSWORD }}" >> $GITHUB_ENV
+          echo "ARGOCD_VERIFY_SSL=false" >> $GITHUB_ENV
           
-          echo "📋 ArgoCD Configuration for Python scripts:"
-          echo "  Server: $ARGOCD_URL"
-          echo "  Verify SSL: false"
-          echo "  Token: $([ -n "${{ env.ARGOCD_AUTH_TOKEN }}" ] && echo "Available" || echo "Not available")"
+          echo "📋 Using password-based authentication"
       - name: Debug - Check Service Files
         run: |
           echo "🔍 Checking ArgoCD service files..."
