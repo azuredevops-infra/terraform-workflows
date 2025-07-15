@@ -8,6 +8,8 @@ from rich import print
 from string import Template
 import shutil
 import json
+import requests
+import argocd
 
 logger = logging.getLogger(__name__)
 
@@ -140,3 +142,85 @@ def load_yaml(file_path, as_string: bool = False):
         yaml_template = Template(file.read())
         yaml_string = yaml_template.safe_substitute(os.environ)
         return yaml.safe_load(yaml_string) or {}
+
+def get_argocd_jwt_token(server_url, username, password, verify_ssl=False):
+    """Get proper JWT token from ArgoCD login API"""
+    server_url = server_url.rstrip('/')
+    
+    # Now that routing is fixed, try the standard endpoint
+    login_url = f"{server_url}/api/v1/session"
+    
+    login_data = {
+        "username": username,
+        "password": password
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    try:
+        print(f"🔑 Getting JWT token from: {login_url}")
+        
+        response = requests.post(
+            login_url,
+            json=login_data,
+            headers=headers,
+            verify=verify_ssl,
+            timeout=30
+        )
+        
+        print(f"📡 Login response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            token = result.get('token')
+            
+            if token:
+                print("✅ Successfully obtained JWT token from API")
+                print(f"📋 Token length: {len(token)} characters")
+                return token
+            else:
+                print("❌ No token in response")
+                print(f"Response: {result}")
+        else:
+            print(f"❌ Login failed with status {response.status_code}")
+            print(f"Response: {response.text}")
+            
+    except Exception as e:
+        print(f"❌ Login request failed: {str(e)}")
+    
+    return None
+
+def get_argocd_client():
+    """Get ArgoCD client with proper JWT token authentication"""
+    argocd_url = os.environ.get('ARGOCD_URL')
+    admin_password = os.environ.get('ARGOCD_ADMIN_PASSWORD')
+    verify_ssl = os.environ.get('ARGOCD_VERIFY_SSL', 'false').lower() == 'true'
+    
+    print(f"🔗 Connecting to ArgoCD at: {argocd_url}")
+    print(f"🔒 SSL Verification: {verify_ssl}")
+    
+    # Set basic environment variables
+    os.environ['ARGOCD_URL'] = argocd_url
+    os.environ['ARGOCD_VERIFY_SSL'] = str(verify_ssl).lower()
+    
+    # Get proper JWT token
+    jwt_token = get_argocd_jwt_token(argocd_url, 'admin', admin_password, verify_ssl)
+    
+    if jwt_token:
+        print("✅ Setting JWT token in environment")
+        os.environ['ARGOCD_AUTH_TOKEN'] = jwt_token
+        
+        try:
+            client = argocd.ArgoCDClient()
+            # Test the connection
+            version_info = client.version()
+            print(f"✅ ArgoCD connection successful, version: {version_info.server_version}")
+            return client
+        except Exception as e:
+            print(f"❌ Client creation failed with JWT token: {str(e)}")
+            raise e
+    else:
+        raise Exception("Could not obtain valid JWT token from ArgoCD API")
