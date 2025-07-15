@@ -215,12 +215,10 @@ def get_argocd_client():
         
         try:
             client = argocd.ArgoCDClient()
-            # Test the connection
-            version_info = client.version()
-            print(f"✅ ArgoCD connection successful, version: {version_info.server_version}")
+            print(f"✅ ArgoCD client created successfully")
             return client
         except Exception as e:
-            print(f"❌ Client creation failed with JWT token: {str(e)}")
+            print(f"❌ Client creation failed: {str(e)}")
             raise e
     else:
         raise Exception("Could not obtain valid JWT token from ArgoCD API")
