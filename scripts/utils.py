@@ -105,7 +105,7 @@ def print_response(response, **kwargs):
     dynamic_width_print()
 
 def prepare_payload_data(meta_yaml_file, service_type):
-    """Prepare payload data for ArgoCD services with Azure Key Vault support"""
+    """Prepare payload data for ArgoCD services with hybrid secret support"""
     service_yamls = {}
     meta_yaml_dir = meta_yaml_file.parent
     meta_yaml_config = load_yaml(meta_yaml_file)
@@ -117,11 +117,41 @@ def prepare_payload_data(meta_yaml_file, service_type):
             
         secret_exists = lambda: service_conf.get('secrets', None)
         if secret_exists():
-            # Handle Azure Key Vault secrets
-            if service_conf['secrets'].get('azure', None):
-                azure_secrets = service_conf['secrets']['azure']
-                secret_values = azure_get_secret_values(azure_secrets)
-                set_env_vars(secret_values)
+            # 🔄 HYBRID: Special handling for Genesis repository
+            if service == 'genesis' and service_type == 'repositories':
+                print("🔑 Setting up Genesis repository secrets...")
+                
+                # Try GitHub variables first (from your workflow step)
+                genesis_username = os.environ.get('GENESIS_USERNAME')
+                genesis_password = os.environ.get('GENESIS_PASSWORD')
+                
+                if genesis_username and genesis_password:
+                    print("✅ Using GitHub repository variables for Genesis")
+                    genesis_secrets = {
+                        'username': genesis_username,      # For ${username} in template
+                        'password': genesis_password,      # For ${password} in template
+                        'genesis-username': genesis_username,
+                        'genesis-password': genesis_password
+                    }
+                    set_env_vars(genesis_secrets)
+                else:
+                    print("🔄 GitHub variables not found, trying Azure Key Vault...")
+                    # Fallback to Azure Key Vault (your existing logic)
+                    try:
+                        if service_conf['secrets'].get('azure', None):
+                            azure_secrets = service_conf['secrets']['azure']
+                            secret_values = azure_get_secret_values(azure_secrets)
+                            set_env_vars(secret_values)
+                            print("✅ Using Azure Key Vault secrets for Genesis")
+                    except Exception as e:
+                        print(f"❌ Azure Key Vault fallback failed: {str(e)}")
+                        raise Exception("Could not obtain Genesis secrets from either GitHub variables or Azure Key Vault")
+            else:
+                # 🔐 UNCHANGED: Existing Azure Key Vault logic for other repositories
+                if service_conf['secrets'].get('azure', None):
+                    azure_secrets = service_conf['secrets']['azure']
+                    secret_values = azure_get_secret_values(azure_secrets)
+                    set_env_vars(secret_values)
     
         if (service_yaml := (meta_yaml_dir / service_type / f"{service}.yaml")).exists():
             if secret_exists():
