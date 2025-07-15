@@ -121,12 +121,12 @@ def prepare_payload_data(meta_yaml_file, service_type):
             if service == 'genesis' and service_type == 'repositories':
                 print("🔑 Setting up Genesis repository secrets...")
                 
-                # Try GitHub variables first (from your workflow step)
+                # Try GitHub secrets first
                 genesis_username = os.environ.get('GENESIS_USERNAME')
                 genesis_password = os.environ.get('GENESIS_PASSWORD')
                 
                 if genesis_username and genesis_password:
-                    print("✅ Using GitHub repository variables for Genesis")
+                    print("✅ Using GitHub repository secrets for Genesis")
                     genesis_secrets = {
                         'username': genesis_username,      # For ${username} in template
                         'password': genesis_password,      # For ${password} in template
@@ -135,17 +135,23 @@ def prepare_payload_data(meta_yaml_file, service_type):
                     }
                     set_env_vars(genesis_secrets)
                 else:
-                    print("🔄 GitHub variables not found, trying Azure Key Vault...")
-                    # Fallback to Azure Key Vault (your existing logic)
+                    print("🔄 GitHub secrets not found, trying Azure Key Vault...")
+                    # Fallback to Azure Key Vault
                     try:
                         if service_conf['secrets'].get('azure', None):
                             azure_secrets = service_conf['secrets']['azure']
                             secret_values = azure_get_secret_values(azure_secrets)
-                            set_env_vars(secret_values)
-                            print("✅ Using Azure Key Vault secrets for Genesis")
+                            # Check if we actually got the secrets
+                            if secret_values and len(secret_values) > 0:
+                                set_env_vars(secret_values)
+                                print("✅ Using Azure Key Vault secrets for Genesis")
+                            else:
+                                raise Exception("No secrets retrieved from Azure Key Vault")
                     except Exception as e:
                         print(f"❌ Azure Key Vault fallback failed: {str(e)}")
-                        raise Exception("Could not obtain Genesis secrets from either GitHub variables or Azure Key Vault")
+                        print("💡 Make sure GENESIS_USERNAME and GENESIS_PASSWORD are set in workflow")
+                        print("💡 Or ensure Azure Key Vault has 'genesis-username' and 'genesis-password' secrets")
+                        raise Exception("Could not obtain Genesis secrets from either GitHub secrets or Azure Key Vault")
             else:
                 # 🔐 UNCHANGED: Existing Azure Key Vault logic for other repositories
                 if service_conf['secrets'].get('azure', None):
