@@ -214,11 +214,11 @@ jobs:
           kubectl port-forward svc/${{ env.ARGOCD_SERVICE_NAME }} -n ${{ env.ARGOCD_NAMESPACE }} 8080:80 &
           PORT_FORWARD_PID=$!
           echo "PORT_FORWARD_PID=$PORT_FORWARD_PID" >> $GITHUB_ENV
-      
+          
           # Wait for port-forward to be ready
           echo "⏳ Waiting for port-forward to be ready..."
           sleep 15
-      
+          
           # Test connection
           for i in {1..5}; do
             if curl -s http://localhost:8080/ >/dev/null; then
@@ -229,8 +229,8 @@ jobs:
               sleep 5
             fi
           done
-      
-          # Log in to ArgoCD
+          
+          # Login using port-forward
           echo "🔑 Logging in to ArgoCD via port-forward..."
           if echo "y" | argocd login localhost:8080 --username admin --password "${{ env.ARGOCD_ADMIN_PASSWORD }}" --insecure --grpc-web; then
             echo "✅ Port-forward login successful"
@@ -238,42 +238,36 @@ jobs:
             echo "❌ Port-forward login failed"
             exit 1
           fi
-      
-          # Generate token
+          
+          # 🔑 KEY FIX: Generate proper authentication token
           echo "🎫 Generating authentication token for API access..."
-          AUTH_TOKEN=$(argocd account generate-token --account admin --expires-in=30m --grpc-web 2>/dev/null)
-      
-          # Validate token
-          if [ -z "$AUTH_TOKEN" ]; then
-            echo "⚠️ Token generation failed, trying fallback extraction..."
-            
+          
+          # Try to generate a token (this should work after successful login)
+          AUTH_TOKEN=$(argocd account generate-token --account admin --expires-in=30m 2>/dev/null || echo "")
+          
+          if [ -n "$AUTH_TOKEN" ]; then
+            echo "✅ Token generated successfully"
+          else
+            echo "⚠️ Token generation failed, extracting from config..."
+            # Extract token from ArgoCD CLI config file
             if [ -f "$HOME/.config/argocd/config" ]; then
               AUTH_TOKEN=$(cat "$HOME/.config/argocd/config" | grep -A 10 "localhost:8080" | grep "auth-token" | cut -d'"' -f4 | head -1)
             fi
-      
+            
             if [ -z "$AUTH_TOKEN" ]; then
               echo "❌ Could not obtain authentication token"
               exit 1
             else
-              echo "✅ Extracted token from ArgoCD CLI config"
+              echo "✅ Extracted token from CLI config"
             fi
-          else
-            echo "✅ Token generated successfully"
           fi
-      
-          # Validate token is base64-decodable
-          echo "$AUTH_TOKEN" | base64 --decode &>/dev/null
-          if [ $? -ne 0 ]; then
-            echo "❌ The token appears malformed or is not base64-decodable"
-            exit 1
-          fi
-      
-          # Export final values
+          
+          # Export the token
           echo "::add-mask::$AUTH_TOKEN"
           echo "ARGOCD_AUTH_TOKEN=$AUTH_TOKEN" >> $GITHUB_ENV
           echo "ARGOCD_SERVER_URL=http://localhost:8080" >> $GITHUB_ENV
+          
           echo "✅ Authentication setup complete"
-
       
       - name: Set up Python
         uses: actions/setup-python@v4
