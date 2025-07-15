@@ -102,6 +102,16 @@ jobs:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
+      - name: Setup Genesis Repository Secrets
+        run: |
+          echo "🔧 Setting up Genesis repository secrets from GitHub variables..."
+          
+          # Set GitHub variables for Genesis repository
+          echo "GENESIS_USERNAME=CheriCoder" >> $GITHUB_ENV
+          echo "GENESIS_PASSWORD=${{ vars.GENESIS_PAT_TOKEN }}" >> $GITHUB_ENV
+          
+          echo "✅ Genesis secrets configured from GitHub repository variables"
+
       - name: Install ArgoCD CLI
         uses: ./.github/actions/setup-argocd-cli
 
