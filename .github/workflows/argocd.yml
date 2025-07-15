@@ -241,7 +241,7 @@ jobs:
       
           # Generate token
           echo "🎫 Generating authentication token for API access..."
-          AUTH_TOKEN=$(argocd account generate-token --account admin --expires-in=30m 2>/dev/null)
+          AUTH_TOKEN=$(argocd account generate-token --account admin --expires-in=30m --grpc-web 2>/dev/null)
       
           # Validate token
           if [ -z "$AUTH_TOKEN" ]; then
