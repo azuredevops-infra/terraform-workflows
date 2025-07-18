@@ -1,6 +1,4 @@
-# Terraform Workflows - GitOps CI/CD Engine
-
-[![Terraform Checkov Tests](https://github.com/infra-workspaces/terraform-workflows/actions/workflows/tf_checkov.yml/badge.svg?branch=main&event=repository_dispatch)](https://github.com/infra-workspaces/terraform-workflows/actions/workflows/tf_checkov.yml) [![Terraform Lint](https://github.com/infra-workspaces/terraform-workflows/actions/workflows/tf_lint.yml/badge.svg?event=repository_dispatch)](https://github.com/infra-workspaces/terraform-workflows/actions/workflows/tf_lint.yml)
+# Azure Terraform Workflows - GitOps CI/CD Engine
 
 This repository serves as the **central CI/CD automation engine** for GitOps-driven infrastructure and application deployments. It provides reusable GitHub Actions, workflows, and tools that orchestrate Terraform infrastructure provisioning and ArgoCD application deployments across multiple environments and repositories.
 
@@ -642,20 +640,12 @@ gh pr create \
 ### External Integrations
 
 - **[Azure DevOps](https://dev.azure.com/)** - Alternative CI/CD platform
-- **[Terraform Cloud](https://app.terraform.io/)** - Remote state management
-- **[Infracost](https://www.infracost.io/)** - Cost estimation and tracking
 - **[ArgoCD](https://argo-cd.readthedocs.io/)** - GitOps application delivery
 - **[Grafana](https://grafana.com/)** - Monitoring and observability
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👥 Maintainers
-
-- **Platform Engineering Team** - Core infrastructure and automation
-- **DevOps Team** - CI/CD pipeline and workflow maintenance  
-- **Security Team** - Access control and compliance
 
 ---
 
